@@ -1,0 +1,23 @@
+.venv/
+.cache/
+__pycache__/
+*.egg-info/
+config/config.yaml
+*.wav
+config/glossary.user.yaml
+prompts/*.user.md
+records/
+
+# crash dumps, logs, caches
+*.stackdump
+*.log
+.pytest_cache/
+
+# secrets and machine-specific files: never commit
+.env
+.env.*
+*.pem
+*.key
+*.crt
+config/*.local.yaml
+.claude/settings.local.json

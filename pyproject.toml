@@ -1,0 +1,34 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-typeless"
+version = "0.1.0"
+requires-python = ">=3.10"
+license = { text = "MIT" }
+dependencies = [
+  "faster-whisper>=1.1.0",
+  "av>=11,<16",  # faster-whisper 1.2.x passes metadata_errors, removed in PyAV 16+
+  "sounddevice",
+  "numpy",
+  "httpx",
+  "pyyaml",
+  "pydantic>=2.0",
+  "pyperclip",
+  "pynput",
+  "pillow",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-mock", "respx"]
+
+[project.scripts]
+local-typeless = "local_typeless.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
