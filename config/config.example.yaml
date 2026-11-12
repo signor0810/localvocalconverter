@@ -1,0 +1,118 @@
+# Local Typeless Tool Configuration Example (v0.2)
+# Copy this file to config/config.yaml for local development.
+
+active_stt_profile: cpu_fast
+active_llm_profile: dev
+
+glossary_path: config/glossary.yaml
+prompts_dir: prompts
+cache_dir: records/cache  # working files: last recording, history, logs, teach samples (any folder you like)
+history_enabled: true
+history_max: 20
+
+stt_profiles:
+  cpu_fast:
+    device: cpu
+    model_size: small
+    model_path: null
+    compute_type: int8
+    cpu_threads: 6
+    beam_size: 2
+    vad_filter: true
+    language: null
+  cpu_accurate:
+    device: cpu
+    model_size: large-v3-turbo
+    model_path: null
+    compute_type: int8
+    cpu_threads: 6
+    beam_size: 3
+    vad_filter: true
+    language: null
+  gpu_local:
+    device: cuda
+    model_size: large-v3-turbo
+    model_path: null
+    compute_type: int8_float16
+    cpu_threads: 6
+    beam_size: 5
+    vad_filter: true
+    language: null
+
+llm_profiles:
+  dev:
+    provider: openai_compatible
+    base_url: http://localhost:8000/v1
+    api_key_env: DGX_API_KEY
+    model: Qwen/Qwen2.5-32B-Instruct
+    timeout_sec: 15.0
+    temperature: 0.2
+    max_tokens: 2048
+    extra_headers: {}
+    # Thinking mode makes dictation ~8x slower; disabled for fast turnaround
+    extra_body:
+      chat_template_kwargs:
+        enable_thinking: false
+  corp:
+    provider: gateway
+    base_url: https://gateway.corp.internal/v1
+    api_key_env: GATEWAY_API_KEY
+    model: qwen-corp
+    timeout_sec: 15.0
+    temperature: 0.2
+    max_tokens: 2048
+    extra_headers: {}
+    extra_body: {}
+    # Gateway compatibility. Every line below shows the default; change only what your gateway needs.
+    api_key_header: Authorization   # header carrying the key, e.g. api-key or X-API-Key
+    api_key_prefix: "Bearer "       # text before the key; "" sends the bare key
+    verify_tls: true                # false = no certificate check (diagnosis only)
+    ca_bundle: null                 # PEM file with your organisation's root CA; null = certifi + OS trust store
+    use_env_proxy: true             # false = ignore proxy variables / Windows proxy settings, connect directly
+    proxy: null                     # explicit proxy URL for this profile
+    chat_path: /chat/completions    # appended to base_url
+    models_path: /models            # appended to base_url for the health check; "" if the gateway has no model list
+
+recorder:
+  sample_rate: 16000
+  channels: 1
+  beep: true
+
+output:
+  clipboard: true
+  auto_paste: false
+  protect_image_clipboard: true
+  obsidian_note_path: null
+  paste_step_delay_ms: 300  # pause in ms after each paste step when pasting rich sequences
+
+hotkeys:
+  clean: "<alt>+q"
+  slide: "<alt>+s"
+  summary: "<alt>+w"
+  cancel: "<esc>"
+  paste_image: "<alt>+v"  # only active while recording: insert clipboard image here
+  mode: toggle
+
+images:
+  enabled: true  # capture clipboard images while recording
+  poll_ms: 150  # clipboard sequence-number poll interval in milliseconds
+  trigger: paste  # "paste": image enters on paste hotkey/button; "auto": on every clipboard change
+
+streaming:
+  enabled: true  # transcribe audio chunks while recording
+  min_chunk_sec: 12.0  # cut at the first silence after this much audio
+  max_chunk_sec: 28.0  # forced cut at the quietest recent frame
+  silence_sec: 0.5  # silence run duration in seconds that qualifies as a cut point
+
+refine:
+  block_target_chars: 700  # clean mode: target character length per refinement block
+  block_max_chars: 1000  # clean mode: hard maximum character length per refinement block
+  context_chars: 150  # tail character count of the previous block provided as context
+
+storage:
+  # Everything this tool accumulates lives under records/ by default. To move it all,
+  # change records_dir, images_dir and cache_dir (top of this file); absolute paths are fine.
+  records_dir: records  # directory for finished dictation Markdown files
+  images_dir: records/images  # directory for images captured while recording
+  retention_days: 90  # days to retain records and images before cleanup (0 = keep forever)
+  filename_format: "{date}-{time}_{mode}_{title}"  # format for record filenames without .md
