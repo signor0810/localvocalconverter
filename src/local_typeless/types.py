@@ -98,6 +98,32 @@ class RecorderConfig:
     beep: bool = True                   # winsound.Beep cues; no-op on non-Windows
 
 
+DEFAULT_TABLE_HTML_APPS: List[str] = [
+    "winword.exe",
+    "powerpnt.exe",
+    "outlook.exe",
+    "olk.exe",
+    "excel.exe",
+    "onenote.exe",
+    "ms-teams.exe",
+    "teams.exe",
+]
+
+
+DEFAULT_PATH_PASTE_APPS: List[str] = [
+    "windowsterminal.exe",
+    "wt.exe",
+    "cmd.exe",
+    "powershell.exe",
+    "pwsh.exe",
+    "conhost.exe",
+    "openconsole.exe",
+    "wezterm-gui.exe",
+    "alacritty.exe",
+    "mintty.exe",
+]
+
+
 @dataclass
 class OutputConfig:
     clipboard: bool = True
@@ -105,6 +131,10 @@ class OutputConfig:
     protect_image_clipboard: bool = True  # don't clobber an image on the clipboard silently
     obsidian_note_path: Optional[str] = None  # if set, also append to this .md
     paste_step_delay_ms: int = 300      # pause after each Ctrl+V of a text/image sequence
+    table_paste_format: str = "auto"    # "auto" | "markdown" | "html"
+    table_html_apps: List[str] = field(default_factory=lambda: list(DEFAULT_TABLE_HTML_APPS))
+    image_paste_mode: str = "auto"      # "auto" (path for path_paste_apps, image otherwise) | "image" | "path"
+    path_paste_apps: List[str] = field(default_factory=lambda: list(DEFAULT_PATH_PASTE_APPS))
 
 
 @dataclass
@@ -148,6 +178,24 @@ class HotkeyConfig:
     mode: str = "toggle"                # "toggle" | "push_to_talk"
 
 
+@dataclass(frozen=True)
+class DraftPiece:
+    """One chunk of dictation, cleaned and ready to be inserted into the draft."""
+    job_id: int
+    seq: int               # 0-based order within the job; delivered strictly in order
+    start_sec: float       # audio span of the chunk, seconds from the start of the recording
+    end_sec: float
+    raw_text: str          # transcript of the chunk
+    text: str              # cleaned text; the normalized raw text when fallback is True
+    fallback: bool = False # the LLM failed for this piece
+
+
+@dataclass
+class DraftConfig:
+    enabled: bool = True            # draft window flow; False = the old "paste when done" flow
+    autosave: bool = True           # keep the draft in <cache_dir>/draft.json across restarts
+
+
 @dataclass
 class AppConfig:
     stt_profiles: Dict[str, STTProfileConfig] = field(default_factory=dict)
@@ -166,6 +214,7 @@ class AppConfig:
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
     refine: RefineConfig = field(default_factory=RefineConfig)
     storage: StorageConfig = field(default_factory=StorageConfig)
+    draft: DraftConfig = field(default_factory=DraftConfig)
 
     @property
     def stt(self) -> STTProfileConfig:
@@ -197,6 +246,10 @@ class CapturedImage:
     index: int                          # 1-based; rendered in text as the marker "[圖<index>]"
     t_sec: float                        # seconds from the start of the recording
     path: str                           # local PNG file
+    kind: str = "image"                 # "image" | "table" | "link" | "text" | "file"
+    text: str = ""                      # link: the URL; text: the snippet; table: Markdown table;
+                                        # file: absolute path of the user's own file (never copied)
+    html: str = ""                      # table: HTML fragment (<table>...</table>), "" if only TSV was available
 
 
 @dataclass(frozen=True)

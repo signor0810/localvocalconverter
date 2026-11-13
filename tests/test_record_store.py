@@ -29,6 +29,10 @@ def test_format_record_name_cleaning():
     text1 = "重點 [圖1] 以及 [圖2] 還有 [?]   多餘  空白"
     assert format_record_name(fmt, t, Mode.CLEAN, text1) == "20261112_整理_重點 以及 還有 多餘 空白"
 
+    # All four markers stripped
+    text_four = "測試 [表1] 與 [連結2] 還有 [文字3] 以及 [圖4] 標記"
+    assert format_record_name(fmt, t, Mode.CLEAN, text_four) == "20261112_整理_測試 與 還有 以及 標記"
+
     # Illegal Windows characters removed
     text2 = r'路徑 / 和 \ 還有 : * ? " < > | 符號'
     assert format_record_name(fmt, t, Mode.CLEAN, text2) == "20261112_整理_路徑 和 還有 符號"
@@ -99,6 +103,77 @@ def test_record_store_save_content_and_month_folder(tmp_path: Path):
     assert "images: 1\n" in content
     assert "## 結果\n\n結果包含 ![圖1](D:/data/img1.png) 以及說明\n\n" in content
     assert "## 原文\n\n原文包含 [圖1] 標記\n" in content
+
+
+def test_record_store_save_with_four_attachment_types(tmp_path: Path):
+    rec_dir = tmp_path / "records"
+    img_dir = tmp_path / "images"
+    fixed_time = datetime(2026, 11, 12, 14, 30, 5)
+    store = RecordStore(rec_dir, img_dir, now=lambda: fixed_time)
+
+    tab1 = CapturedImage(index=1, t_sec=1.0, path="D:/data/tab1.md", kind="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |")
+    img2 = CapturedImage(index=2, t_sec=2.0, path="D:/data/img2.png", kind="image")
+    lnk3 = CapturedImage(index=3, t_sec=3.0, path="", kind="link", text="https://example.com")
+    txt4 = CapturedImage(index=4, t_sec=4.0, path="", kind="text", text="文字內容")
+
+    res = PipelineResult(
+        raw_text="原文包含 [表1] [圖2] [連結3] [文字4]",
+        final_text="表格：[表1] 圖：[圖2] 網址：[連結3] 文字：[文字4]",
+        mode=Mode.CLEAN,
+        stt_profile_name="cpu",
+        llm_profile_name="dev",
+        stt_elapsed_sec=0.2,
+        llm_elapsed_sec=0.3,
+        fallback_triggered=False,
+        images=[tab1, img2, lnk3, txt4],
+    )
+
+    saved_path = store.save(res)
+    assert saved_path is not None
+    assert saved_path.exists()
+    content = saved_path.read_text(encoding="utf-8")
+
+    # [表1] -> markdown table with blank lines
+    assert "| A | B |\n| --- | --- |\n| 1 | 2 |" in content
+    # [圖2] -> ![圖2](path)
+    assert "![圖2](D:/data/img2.png)" in content
+    # [連結3] -> URL
+    assert "網址：https://example.com" in content
+    # [文字4] -> text
+    assert "文字：文字內容" in content
+    assert "images: 4\n" in content
+
+
+def test_record_store_save_marker_mismatch_and_no_recursive_substitution(tmp_path: Path):
+    rec_dir = tmp_path / "records"
+    img_dir = tmp_path / "images"
+    store = RecordStore(rec_dir, img_dir)
+
+    img1 = CapturedImage(index=1, t_sec=1.0, path="D:/data/img1.png", kind="image")
+    txt2 = CapturedImage(index=2, t_sec=2.0, path="", kind="text", text="包含文字 [圖1] 不應二次展開")
+
+    res = PipelineResult(
+        raw_text="原文",
+        final_text="看 [表1] 和 [文字2]",
+        mode=Mode.CLEAN,
+        stt_profile_name="cpu",
+        llm_profile_name="dev",
+        stt_elapsed_sec=0.2,
+        llm_elapsed_sec=0.3,
+        images=[img1, txt2],
+    )
+
+    saved_path = store.save(res)
+    assert saved_path is not None
+    content = saved_path.read_text(encoding="utf-8")
+
+    # [表1] did not match img1 (which is [圖1]), so it stays [表1]
+    assert "看 [表1] 和 " in content
+    # [文字2] was replaced, and its internal [圖1] was NOT replaced by ![圖1](...)
+    assert "包含文字 [圖1] 不應二次展開" in content
+    assert "![圖1]" not in content
+
+
 
 
 def test_record_store_save_name_collision(tmp_path: Path):

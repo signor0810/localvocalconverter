@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hashlib
+import inspect
 import io
 import logging
 import shutil
@@ -12,11 +13,21 @@ import uuid
 from pathlib import Path
 from typing import Callable, List, Optional, Protocol, runtime_checkable
 
+from local_typeless.capture._win32clip import CF_HDROP, CF_UNICODETEXT, get_win32_apis, hdrop_paths
+from local_typeless.capture.tables import (
+    extract_html_fragment,
+    html_table_to_rows,
+    parse_single_table_html,
+    rows_to_html,
+    rows_to_markdown,
+    tsv_to_rows,
+)
 from local_typeless.types import CapturedImage
 
 logger = logging.getLogger(__name__)
 
 GRAB_RETRIES = 3   # extra polls to retry an empty grab after a clipboard change
+IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
 
 
 @runtime_checkable
@@ -31,6 +42,14 @@ class ClipboardBackend(Protocol):
         """Returns PNG bytes of the image(s) on the clipboard now; [] if none."""
         ...
 
+    def grab_html(self) -> str:
+        """Returns HTML string on the clipboard now; '' if none."""
+        ...
+
+    def grab_text(self) -> str:
+        """Returns Unicode text on the clipboard now; '' if none."""
+        ...
+
 
 class Win32ClipboardBackend:
     """Real Win32 implementation using ctypes and Pillow."""
@@ -39,9 +58,10 @@ class Win32ClipboardBackend:
         if sys.platform != "win32":
             return 0
         try:
-            import ctypes
-
-            return int(ctypes.windll.user32.GetClipboardSequenceNumber())
+            _, user32 = get_win32_apis()
+            if user32 is None:
+                return 0
+            return int(user32.GetClipboardSequenceNumber())
         except Exception as e:
             logger.debug("Win32ClipboardBackend.sequence failed: %s", e)
             return 0
@@ -63,7 +83,7 @@ class Win32ClipboardBackend:
                 return [buf.getvalue()]
 
             if isinstance(result, list):
-                valid_exts = {".png", ".jpg", ".jpeg", ".bmp", ".gif", ".webp"}
+                valid_exts = IMAGE_EXTS
                 out: List[bytes] = []
                 for item in result:
                     try:
@@ -85,6 +105,89 @@ class Win32ClipboardBackend:
         except Exception as e:
             logger.debug("Win32ClipboardBackend.grab_png failed: %s", e)
             return []
+
+    def grab_files(self) -> List[str]:
+        """Paths of the files copied in Explorer (CF_HDROP); [] if none."""
+        if sys.platform != "win32":
+            return []
+        try:
+            _, user32 = get_win32_apis()
+            if user32 is None:
+                return []
+            if not user32.OpenClipboard(None):
+                return []
+            try:
+                handle = user32.GetClipboardData(CF_HDROP)
+                return hdrop_paths(handle) if handle else []
+            finally:
+                user32.CloseClipboard()
+        except Exception as e:
+            logger.debug("Win32ClipboardBackend.grab_files failed: %s", e)
+            return []
+
+    def grab_html(self) -> str:
+        if sys.platform != "win32":
+            return ""
+        try:
+            kernel32, user32 = get_win32_apis()
+            if kernel32 is None or user32 is None:
+                return ""
+            import ctypes
+
+            cf_html = user32.RegisterClipboardFormatW("HTML Format")
+            if not cf_html:
+                return ""
+            if not user32.OpenClipboard(None):
+                return ""
+            try:
+                handle = user32.GetClipboardData(cf_html)
+                if not handle:
+                    return ""
+                ptr = kernel32.GlobalLock(handle)
+                if not ptr:
+                    return ""
+                try:
+                    size = kernel32.GlobalSize(handle)
+                    raw = ctypes.string_at(ptr, size)
+                    null_pos = raw.find(b"\x00")
+                    if null_pos != -1:
+                        raw = raw[:null_pos]
+                    return raw.decode("utf-8", errors="replace")
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception as e:
+            logger.debug("Win32ClipboardBackend.grab_html failed: %s", e)
+            return ""
+
+    def grab_text(self) -> str:
+        if sys.platform != "win32":
+            return ""
+        try:
+            kernel32, user32 = get_win32_apis()
+            if kernel32 is None or user32 is None:
+                return ""
+            import ctypes
+
+            if not user32.OpenClipboard(None):
+                return ""
+            try:
+                handle = user32.GetClipboardData(CF_UNICODETEXT)
+                if not handle:
+                    return ""
+                ptr = kernel32.GlobalLock(handle)
+                if not ptr:
+                    return ""
+                try:
+                    return str(ctypes.wstring_at(ptr))
+                finally:
+                    kernel32.GlobalUnlock(handle)
+            finally:
+                user32.CloseClipboard()
+        except Exception as e:
+            logger.debug("Win32ClipboardBackend.grab_text failed: %s", e)
+            return ""
 
 
 class ClipboardImageWatcher:
@@ -110,6 +213,21 @@ class ClipboardImageWatcher:
         self._keep_sessions = keep_sessions
         self._trigger = trigger
         self._sleep = sleep
+
+        self._on_image_takes_kind = False
+        if self._on_image is not None:
+            try:
+                sig = inspect.signature(self._on_image)
+                params = list(sig.parameters.values())
+                has_varargs = any(p.kind == inspect.Parameter.VAR_POSITIONAL for p in params)
+                pos_params = [
+                    p
+                    for p in params
+                    if p.kind in (inspect.Parameter.POSITIONAL_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
+                ]
+                self._on_image_takes_kind = has_varargs or len(pos_params) >= 2
+            except Exception:
+                self._on_image_takes_kind = False
 
         self._lock = threading.RLock()
         self._images: List[CapturedImage] = []
@@ -197,65 +315,187 @@ class ClipboardImageWatcher:
 
                     if self._on_image is not None:
                         try:
-                            self._on_image(len(self._images))
+                            if self._on_image_takes_kind:
+                                self._on_image(len(self._images), "image")
+                            else:
+                                self._on_image(len(self._images))
                         except Exception as e:
                             logger.debug("on_image callback failed: %s", e)
             except Exception as e:
                 logger.debug("poll_once encountered an error: %s", e)
 
+    def _ensure_session_dir(self) -> None:
+        if self._session_dir is None:
+            session_name = (
+                f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
+            )
+            self._session_dir = self._sessions_dir / session_name
+            self._session_dir.mkdir(parents=True, exist_ok=True)
+
     def capture_now(self) -> int:
-        """Grab the clipboard image now and save it into the current session."""
+        """Grab clipboard content (table -> image -> link -> text) into the current session."""
         try:
             with self._lock:
                 if not self._is_running:
                     return 0
                 t0 = self._t0
 
-            png_list = self._backend.grab_png()
+            grab_html_fn = getattr(self._backend, "grab_html", lambda: "")
+            grab_text_fn = getattr(self._backend, "grab_text", lambda: "")
+            grab_png_fn = getattr(self._backend, "grab_png", lambda: [])
+            grab_files_fn = getattr(self._backend, "grab_files", lambda: [])
+
+            def _other_files() -> List[str]:
+                # Copied image files already arrive as pictures through grab_png.
+                return [f for f in grab_files_fn() if Path(f).suffix.lower() not in IMAGE_EXTS]
+
+            html_raw = grab_html_fn()
+            text_raw = grab_text_fn()
+            png_list = grab_png_fn()
+            file_list = _other_files()
+
             retries = 3
-            while not png_list and retries > 0:
+            while (not html_raw and not (text_raw and text_raw.strip()) and not png_list
+                   and not file_list and retries > 0):
                 self._sleep(0.05)
                 retries -= 1
                 with self._lock:
                     if not self._is_running:
                         return 0
-                png_list = self._backend.grab_png()
+                html_raw = grab_html_fn()
+                text_raw = grab_text_fn()
+                png_list = grab_png_fn()
+                file_list = _other_files()
 
-            if not png_list:
-                return 0
+            # Priority 1: Table
+            table_md = ""
+            table_html = ""
+            table_res = parse_single_table_html(html_raw) if html_raw else None
+            if table_res is not None:
+                table_html, rows = table_res
+                table_md = rows_to_markdown(rows)
+            elif text_raw:
+                tsv_rows = tsv_to_rows(text_raw)
+                if tsv_rows is not None:
+                    table_md = rows_to_markdown(tsv_rows)
+                    table_html = rows_to_html(tsv_rows)
 
-            valid_pngs = [b for b in png_list if b]
-            if not valid_pngs:
-                return 0
-
+            captured_kind: Optional[str] = None
             added = 0
             with self._lock:
                 if not self._is_running:
                     return 0
-                if self._session_dir is None:
-                    session_name = (
-                        f"{time.strftime('%Y%m%d-%H%M%S')}-{uuid.uuid4().hex[:6]}"
-                    )
-                    self._session_dir = self._sessions_dir / session_name
-                    self._session_dir.mkdir(parents=True, exist_ok=True)
-
                 dt = self._clock() - t0
-                for png_bytes in valid_pngs:
+
+                if table_md:
+                    self._ensure_session_dir()
+                    assert self._session_dir is not None
                     index = len(self._images) + 1
-                    img_path = self._session_dir / f"img_{index}.png"
-                    img_path.write_bytes(png_bytes)
+                    md_path = self._session_dir / f"table_{index}.md"
+                    md_path.write_text(table_md, encoding="utf-8")
+                    if table_html:
+                        html_path = self._session_dir / f"table_{index}.html"
+                        html_path.write_text(table_html, encoding="utf-8")
+
                     captured = CapturedImage(
                         index=index,
                         t_sec=dt,
-                        path=str(img_path.resolve()),
+                        path=str(md_path.resolve()),
+                        kind="table",
+                        text=table_md,
+                        html=table_html,
                     )
                     self._images.append(captured)
-                    added += 1
+                    added = 1
+                    captured_kind = "table"
+
+                elif png_list:
+                    # Priority 2: Image
+                    valid_pngs = [b for b in png_list if b]
+                    if valid_pngs:
+                        self._ensure_session_dir()
+                        assert self._session_dir is not None
+                        for png_bytes in valid_pngs:
+                            index = len(self._images) + 1
+                            img_path = self._session_dir / f"img_{index}.png"
+                            img_path.write_bytes(png_bytes)
+                            captured = CapturedImage(
+                                index=index,
+                                t_sec=dt,
+                                path=str(img_path.resolve()),
+                                kind="image",
+                            )
+                            self._images.append(captured)
+                            added += 1
+                        captured_kind = "image"
+
+                if not table_md and file_list:
+                    # Files copied in Explorer: referenced by absolute path, never copied.
+                    for f in file_list:
+                        self._images.append(CapturedImage(
+                            index=len(self._images) + 1,
+                            t_sec=dt,
+                            path="",
+                            kind="file",
+                            text=str(Path(f).absolute()),
+                        ))
+                        added += 1
+                    captured_kind = captured_kind or "file"
+
+                if added == 0 and text_raw and text_raw.strip():
+                    stripped = text_raw.strip()
+                    # Priority 3: Link
+                    if (stripped.startswith("http://") or stripped.startswith("https://")) and not any(
+                        c.isspace() for c in stripped
+                    ):
+                        index = len(self._images) + 1
+                        captured = CapturedImage(
+                            index=index,
+                            t_sec=dt,
+                            path="",
+                            kind="link",
+                            text=stripped,
+                        )
+                        self._images.append(captured)
+                        added = 1
+                        captured_kind = "link"
+                    else:
+                        # Priority 4: Text snippet (strip leading/trailing blank lines)
+                        lines = text_raw.splitlines()
+                        start_idx = 0
+                        while start_idx < len(lines) and not lines[start_idx].strip():
+                            start_idx += 1
+                        end_idx = len(lines)
+                        while end_idx > start_idx and not lines[end_idx - 1].strip():
+                            end_idx -= 1
+                        snippet = "\n".join(lines[start_idx:end_idx])
+                        if snippet:
+                            if len(snippet) > 20000:
+                                logger.warning(
+                                    "Pasted text snippet exceeded 20000 characters (%d chars), truncated",
+                                    len(snippet),
+                                )
+                                snippet = snippet[:20000]
+                            index = len(self._images) + 1
+                            captured = CapturedImage(
+                                index=index,
+                                t_sec=dt,
+                                path="",
+                                kind="text",
+                                text=snippet,
+                            )
+                            self._images.append(captured)
+                            added = 1
+                            captured_kind = "text"
+
                 total_count = len(self._images)
 
-            if added > 0 and self._on_image is not None:
+            if added > 0 and self._on_image is not None and captured_kind is not None:
                 try:
-                    self._on_image(total_count)
+                    if self._on_image_takes_kind:
+                        self._on_image(total_count, captured_kind)
+                    else:
+                        self._on_image(total_count)
                 except Exception as e:
                     logger.debug("on_image callback failed: %s", e)
 
@@ -263,6 +503,38 @@ class ClipboardImageWatcher:
         except Exception as e:
             logger.debug("capture_now encountered an error: %s", e)
             return 0
+
+    def add_files(self, paths: List[str]) -> int:
+        """Insert files (e.g. dropped onto the panel) at the current point of the recording.
+
+        Each becomes a "[檔案N]" marker that is pasted as the file's absolute path; the
+        file itself is neither copied nor read. Returns 0 when not recording.
+        """
+        cleaned = [str(Path(p).absolute()) for p in paths if p and str(p).strip()]
+        if not cleaned:
+            return 0
+        with self._lock:
+            if not self._is_running:
+                return 0
+            dt = self._clock() - self._t0
+            for f in cleaned:
+                self._images.append(CapturedImage(
+                    index=len(self._images) + 1,
+                    t_sec=dt,
+                    path="",
+                    kind="file",
+                    text=f,
+                ))
+            total_count = len(self._images)
+        if self._on_image is not None:
+            try:
+                if self._on_image_takes_kind:
+                    self._on_image(total_count, "file")
+                else:
+                    self._on_image(total_count)
+            except Exception as e:
+                logger.debug("on_image callback failed: %s", e)
+        return len(cleaned)
 
     def stop(self) -> List[CapturedImage]:
         if self._trigger == "paste":

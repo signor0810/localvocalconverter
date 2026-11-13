@@ -11,9 +11,11 @@ from local_typeless.types import CapturedImage, Segment
 logger = logging.getLogger(__name__)
 
 MARKER_RE: re.Pattern = re.compile(r"\[圖(\d+)\]")
+ANY_MARKER_RE: re.Pattern = re.compile(r"\[(圖|表|連結|文字|檔案)(\d+)\]")
 
 _CANONICALIZE_RE = re.compile(
-    r"[\[【［]\s*(?:圖|图)片?\s*([0-9０-９]+)\s*[\]】］]"
+    r"[\[【［]\s*(圖|图|圖片|图片|表|表格|連結|链接|網址|网址|link|文字|文本|文字片段|檔案|档案|file)\s*([0-9０-９]+)\s*[\]】］]",
+    re.IGNORECASE,
 )
 _STRONG_PUNCT = set("。！？!?；;\n")
 _WEAK_PUNCT = ("，", ",", "、", " ")
@@ -24,22 +26,49 @@ def marker(index: int) -> str:
     return f"[圖{index}]"
 
 
+def marker_for(item: CapturedImage) -> str:
+    """Return the canonical text marker for a captured attachment item."""
+    kind = getattr(item, "kind", "image")
+    if kind == "table":
+        return f"[表{item.index}]"
+    elif kind == "link":
+        return f"[連結{item.index}]"
+    elif kind == "text":
+        return f"[文字{item.index}]"
+    elif kind == "file":
+        return f"[檔案{item.index}]"
+    return f"[圖{item.index}]"
+
+
 def find_markers(text: str) -> List[str]:
     """Return all canonical markers in order of appearance."""
-    return [m.group(0) for m in MARKER_RE.finditer(text)]
+    return [m.group(0) for m in ANY_MARKER_RE.finditer(text)]
 
 
 def strip_markers(text: str) -> str:
     """Remove every canonical marker from text."""
-    return MARKER_RE.sub("", text)
+    return ANY_MARKER_RE.sub("", text)
 
 
 def canonicalize_markers(text: str) -> str:
-    """Rewrite LLM variants to the canonical form [圖N]."""
+    """Rewrite LLM variants to the canonical form ([圖N], [表N], [連結N], [文字N], [檔案N])."""
     def _repl(m: re.Match) -> str:
-        digits = unicodedata.normalize("NFKC", m.group(1))
+        tag = m.group(1).lower()
+        digits = unicodedata.normalize("NFKC", m.group(2))
         num = int(digits)
-        return f"[圖{num}]"
+        if tag in ("圖", "图", "圖片", "图片"):
+            prefix = "圖"
+        elif tag in ("表", "表格"):
+            prefix = "表"
+        elif tag in ("連結", "链接", "網址", "网址", "link"):
+            prefix = "連結"
+        elif tag in ("文字", "文本", "文字片段"):
+            prefix = "文字"
+        elif tag in ("檔案", "档案", "file"):
+            prefix = "檔案"
+        else:
+            prefix = "圖"
+        return f"[{prefix}{num}]"
 
     return _CANONICALIZE_RE.sub(_repl, text)
 
@@ -77,7 +106,7 @@ def _is_strong_boundary(text: str, i: int) -> bool:
 
 
 def _adjust_marker_cut(text: str, cut: int, start: int) -> int:
-    for m in MARKER_RE.finditer(text):
+    for m in ANY_MARKER_RE.finditer(text):
         if m.start() < cut < m.end():
             if m.start() > start:
                 return m.start()
@@ -157,7 +186,7 @@ def join_blocks(parts: Sequence[str]) -> str:
 
 
 def place_markers(segments: Sequence[Segment], images: Sequence[CapturedImage]) -> str:
-    """Insert [圖N] markers into transcript text based on audio timestamps."""
+    """Insert attachment markers ([圖N], [表N], [連結N], [文字N]) into transcript text based on audio timestamps."""
     tokens: List[Tuple[float, float, str]] = []
     for seg in segments:
         words = getattr(seg, "words", None)
@@ -173,7 +202,7 @@ def place_markers(segments: Sequence[Segment], images: Sequence[CapturedImage]) 
     sorted_imgs = sorted(images, key=lambda img: (img.t_sec, img.index))
 
     if not tokens:
-        return "".join(marker(img.index) for img in sorted_imgs).strip()
+        return "".join(marker_for(img) for img in sorted_imgs).strip()
 
     midpoints = [(t[0] + t[1]) / 2.0 for t in tokens]
     img_slots: Dict[int, List[CapturedImage]] = {i: [] for i in range(len(tokens) + 1)}
@@ -188,10 +217,10 @@ def place_markers(segments: Sequence[Segment], images: Sequence[CapturedImage]) 
     out: List[str] = []
     for i, tok in enumerate(tokens):
         for img in img_slots[i]:
-            out.append(marker(img.index))
+            out.append(marker_for(img))
         out.append(tok[2])
     for img in img_slots[len(tokens)]:
-        out.append(marker(img.index))
+        out.append(marker_for(img))
 
     return "".join(out).strip()
 
@@ -201,16 +230,17 @@ def split_rich(text: str, images: Sequence[CapturedImage]) -> List[Union[str, Ca
     if not images:
         return [text] if text.strip() else []
 
-    img_map: Dict[int, CapturedImage] = {img.index: img for img in images}
+    marker_map: Dict[str, CapturedImage] = {marker_for(img): img for img in images}
     raw_parts: List[Union[str, CapturedImage]] = []
     last_end = 0
 
-    for m in MARKER_RE.finditer(text):
-        idx = int(m.group(1))
-        if idx in img_map:
+    for m in ANY_MARKER_RE.finditer(text):
+        token = m.group(0)
+        matched = marker_map.get(token)
+        if matched is not None:
             if m.start() > last_end:
                 raw_parts.append(text[last_end:m.start()])
-            raw_parts.append(img_map[idx])
+            raw_parts.append(matched)
             last_end = m.end()
 
     if last_end < len(text):

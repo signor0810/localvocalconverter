@@ -52,7 +52,14 @@ def save_image_manifest(cache_dir: Path, images: Sequence[CapturedImage]) -> Non
             return
         target.parent.mkdir(parents=True, exist_ok=True)
         data = [
-            {"index": img.index, "t_sec": img.t_sec, "path": img.path}
+            {
+                "index": img.index,
+                "t_sec": img.t_sec,
+                "path": img.path,
+                "kind": getattr(img, "kind", "image"),
+                "text": getattr(img, "text", ""),
+                "html": getattr(img, "html", ""),
+            }
             for img in images
         ]
         target.write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
@@ -74,14 +81,24 @@ def load_image_manifest(cache_dir: Path) -> List[CapturedImage]:
         for item in data:
             if not isinstance(item, dict):
                 continue
-            path_str = item.get("path")
-            if not path_str or not Path(path_str).exists():
-                continue
+            kind = str(item.get("kind", "image"))
+            path_str = str(item.get("path", ""))
+            text_str = str(item.get("text", ""))
+            if kind == "image":
+                if not path_str or not Path(path_str).exists():
+                    continue
+            elif kind == "table":
+                # Keep table if its file exists OR if text is non-empty
+                if path_str and not Path(path_str).exists() and not text_str.strip():
+                    continue
             valid.append(
                 CapturedImage(
                     index=int(item["index"]),
                     t_sec=float(item["t_sec"]),
-                    path=str(path_str),
+                    path=path_str,
+                    kind=kind,
+                    text=text_str,
+                    html=str(item.get("html", "")),
                 )
             )
         return valid
@@ -213,7 +230,14 @@ class Pipeline:
             }
             if result.images:
                 entry["images"] = [
-                    {"index": img.index, "t_sec": img.t_sec, "path": img.path}
+                    {
+                        "index": img.index,
+                        "t_sec": img.t_sec,
+                        "path": img.path,
+                        "kind": getattr(img, "kind", "image"),
+                        "text": getattr(img, "text", ""),
+                        "html": getattr(img, "html", ""),
+                    }
                     for img in result.images
                 ]
             with self.history_path.open("a", encoding="utf-8") as f:
@@ -270,12 +294,11 @@ class Pipeline:
             result.error_message = f"{prior}; {msg}" if prior else msg
         return result
 
-    def _process(
+    def _refine_core(
         self,
         raw_text: str,
         mode: Mode,
-        stt_elapsed: float,
-        record_history: bool = True,
+        stt_elapsed: float = 0.0,
         images: Optional[Sequence[CapturedImage]] = None,
     ) -> PipelineResult:
         cfg = self.config
@@ -300,7 +323,7 @@ class Pipeline:
 
         if not strip_markers(raw_text).strip():
             final_text = raw_text.strip()
-            result = PipelineResult(
+            return PipelineResult(
                 raw_text=raw_text,
                 final_text=final_text,
                 llm_elapsed_sec=0.0,
@@ -310,7 +333,6 @@ class Pipeline:
                 fallback_blocks=0,
                 **base,
             )
-            return self._finish(result, record_history)
 
         from local_typeless.config.loader import load_prompt
 
@@ -336,7 +358,7 @@ class Pipeline:
                 total_blocks = max(1, len(blocks))
                 final_text = self._normalize_safe(raw_text)
                 llm_elapsed = time.perf_counter() - t0
-                result = PipelineResult(
+                return PipelineResult(
                     raw_text=raw_text,
                     final_text=final_text,
                     llm_elapsed_sec=llm_elapsed,
@@ -346,7 +368,6 @@ class Pipeline:
                     fallback_blocks=total_blocks,
                     **base,
                 )
-                return self._finish(result, record_history)
 
             blocks = split_blocks(
                 raw_text, cfg.refine.block_target_chars, cfg.refine.block_max_chars
@@ -442,7 +463,7 @@ class Pipeline:
                 final_text = self._normalize_safe(raw_text)
 
         llm_elapsed = time.perf_counter() - t0
-        result = PipelineResult(
+        return PipelineResult(
             raw_text=raw_text,
             final_text=final_text,
             llm_elapsed_sec=llm_elapsed,
@@ -452,7 +473,91 @@ class Pipeline:
             fallback_blocks=fallback_blocks,
             **base,
         )
+
+    def _process(
+        self,
+        raw_text: str,
+        mode: Mode,
+        stt_elapsed: float,
+        record_history: bool = True,
+        images: Optional[Sequence[CapturedImage]] = None,
+    ) -> PipelineResult:
+        result = self._refine_core(raw_text, mode, stt_elapsed, images=images)
+        if not raw_text.strip():
+            return result
         return self._finish(result, record_history)
+
+    def refine_piece(self, raw: str, prev_raw: str = "") -> Tuple[str, bool]:
+        """Clean one chunk (CLEAN prompt). Returns (text, fallback). Never raises."""
+        if not raw or not raw.strip():
+            return ("", False)
+
+        from local_typeless.config.loader import load_prompt
+
+        try:
+            cfg = self.config
+            system_prompt = load_prompt(
+                Mode.CLEAN, Path(cfg.prompts_dir), self.glossary.build_llm_glossary_section()
+            )
+            if prev_raw:
+                ctx_len = cfg.refine.context_chars
+                if ctx_len > 0:
+                    prev_tail = prev_raw[-ctx_len:]
+                    system_prompt = (
+                        f"{system_prompt}\n\n"
+                        "## 前文（僅供理解語境，絕對不要輸出、重複或改寫前文）\n"
+                        f"{prev_tail}"
+                    )
+            refined = self.llm.refine(raw, system_prompt)
+            canonical = canonicalize_markers(refined)
+            out = self.glossary.normalize_terms(canonical)
+            if is_degenerate(out):
+                raise LLMResponseError("LLM reply is empty or degenerate")
+            if not markers_preserved(raw, out):
+                raise LLMResponseError("image markers changed by LLM")
+            return (out, False)
+        except Exception as e:
+            logger.warning(
+                "refine_piece failed (%s: %s); returning normalized raw text",
+                type(e).__name__,
+                e,
+            )
+            return (self._normalize_safe(raw), True)
+
+    def refine_only(self, text: str, mode: Mode) -> PipelineResult:
+        """Refine a whole text without emitting, history or record file."""
+        return self._refine_core(text, mode, stt_elapsed=0.0, images=None)
+
+    def save_draft(self, final_text: str, raw_text: str) -> Optional[Path]:
+        """Append to history and write one record file for a finished draft. Never raises."""
+        try:
+            if not final_text or not final_text.strip():
+                return None
+            result = PipelineResult(
+                raw_text=raw_text,
+                final_text=final_text,
+                mode=Mode.CLEAN,
+                stt_profile_name=self.config.active_stt_profile,
+                llm_profile_name=self.config.active_llm_profile,
+                stt_elapsed_sec=0.0,
+                llm_elapsed_sec=0.0,
+                images=[],
+            )
+            self._append_history(result)
+            path = None
+            if self.records is not None:
+                try:
+                    path = self.records.save(result)
+                except Exception as e:
+                    logger.warning("RecordStore.save failed: %s: %s", type(e).__name__, e)
+                try:
+                    self.records.cleanup()
+                except Exception as e:
+                    logger.warning("RecordStore.cleanup failed: %s: %s", type(e).__name__, e)
+            return path
+        except Exception as e:
+            logger.warning("save_draft failed: %s: %s", type(e).__name__, e)
+            return None
 
     # ----------------------------------------------------------------- API
     def run_file(
@@ -511,7 +616,14 @@ class Pipeline:
             images = None
             if "images" in last_row:
                 images = [
-                    CapturedImage(index=it["index"], t_sec=it["t_sec"], path=it["path"])
+                    CapturedImage(
+                        index=int(it["index"]),
+                        t_sec=float(it["t_sec"]),
+                        path=str(it.get("path", "")),
+                        kind=str(it.get("kind", "image")),
+                        text=str(it.get("text", "")),
+                        html=str(it.get("html", "")),
+                    )
                     for it in last_row["images"]
                 ]
             return self.run_text(last_row["raw_text"], mode, images=images)

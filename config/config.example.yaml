@@ -84,6 +84,32 @@ output:
   protect_image_clipboard: true
   obsidian_note_path: null
   paste_step_delay_ms: 300  # pause in ms after each paste step when pasting rich sequences
+  # Images: "auto" pastes the picture itself, except in the programs listed in path_paste_apps
+  # (terminals, where local agents run), which get the image's absolute file path instead.
+  # "image" always pastes the picture; "path" always pastes the path.
+  # Dropped or copied files are always pasted as their absolute path.
+  image_paste_mode: auto
+  path_paste_apps:
+    - windowsterminal.exe
+    - wt.exe
+    - cmd.exe
+    - powershell.exe
+    - pwsh.exe
+    - conhost.exe
+    - openconsole.exe
+    - wezterm-gui.exe
+    - alacritty.exe
+    - mintty.exe
+  table_paste_format: auto  # "auto" (HTML for table_html_apps, Markdown otherwise) | "markdown" | "html"
+  table_html_apps:
+    - winword.exe
+    - powerpnt.exe
+    - outlook.exe
+    - olk.exe
+    - excel.exe
+    - onenote.exe
+    - ms-teams.exe
+    - teams.exe
 
 hotkeys:
   clean: "<alt>+q"
@@ -116,3 +142,7 @@ storage:
   images_dir: records/images  # directory for images captured while recording
   retention_days: 90  # days to retain records and images before cleanup (0 = keep forever)
   filename_format: "{date}-{time}_{mode}_{title}"  # format for record filenames without .md
+
+draft:
+  enabled: true     # draft window: cleaned text appears while you speak and can be edited
+  autosave: true    # keep the unfinished draft across restarts

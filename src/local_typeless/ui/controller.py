@@ -181,6 +181,7 @@ class PanelController:
         hotkey_hints: Optional[Dict[str, str]] = None,
     ) -> None:
         self.streaming = streaming
+        self.file_adder: Optional[Callable[[List[str]], int]] = None   # set once the watcher exists
         self._submit = submit
         self._paster = paster
         self._copier = copier
@@ -243,19 +244,34 @@ class PanelController:
             self._dirty = False
             return copy.deepcopy(self.vm)
 
+    _KIND_LABELS = {
+        "image": "圖片",
+        "table": "表格",
+        "link": "網址",
+        "text": "文字片段",
+        "file": "檔案",
+    }
+
     # -------------------------------------------- daemon callbacks (any thread)
-    def on_image(self, count: int) -> None:
-        """Daemon thread: update captured image counter."""
+    def on_image(self, count: int, kind: Optional[str] = None) -> None:
+        """Daemon thread: update captured attachment counter."""
         with self._lock:
             self.vm.image_count = count
-            self.vm.message = f"已擷取圖片 {count}"
+            if kind is None:
+                self.vm.message = f"已擷取圖片 {count}"
+            else:
+                label = self._KIND_LABELS.get(kind, "附件")
+                if count > 1:
+                    self.vm.message = f"已插入{label}（共 {count} 個附件）"
+                else:
+                    self.vm.message = f"已插入{label}"
             self._touch()
 
     def on_paste(self, added: int) -> None:
         """Daemon callback: number of images added by paste_image action."""
         with self._lock:
             if added == 0:
-                self.vm.message = "剪貼簿沒有圖片（先截圖或複製圖片，再按貼上）"
+                self.vm.message = "剪貼簿沒有可插入的內容（先複製圖片、表格、網址、文字或檔案，再按貼上）"
                 self._touch()
 
     def _translate_note(self, note: str) -> str:
@@ -437,6 +453,22 @@ class PanelController:
             phase = self.vm.phase
         if phase == "recording":
             self._submit(Event("paste_image"))
+
+    def files_dropped(self, paths: Sequence[str]) -> None:
+        """Files were dragged onto the panel: insert them at this point of the recording."""
+        with self._lock:
+            phase = self.vm.phase
+        if phase != "recording":
+            self._flash("錄音中才能拖入檔案（先開始錄音，講到要放的地方再拖進來）")
+            return
+        added = 0
+        if self.file_adder is not None:
+            try:
+                added = self.file_adder(list(paths))
+            except Exception as e:
+                logger.warning("file drop failed: %s: %s", type(e).__name__, e)
+        if added == 0:
+            self._flash("無法插入檔案（設定檔的 images.enabled 需為 true）")
 
     def abandon_clicked(self) -> None:
         if self._abandon is not None:

@@ -356,6 +356,29 @@ def test_controller_on_image_updates_view_model_and_resets_on_recording():
     assert c.vm.image_count == 0
 
 
+def test_controller_on_image_with_kinds():
+    c, _, _ = make()
+    c.on_image(1, kind="table")
+    assert c.vm.image_count == 1
+    assert c.vm.message == "已插入表格"
+
+    c.on_image(3, kind="table")
+    assert c.vm.image_count == 3
+    assert c.vm.message == "已插入表格（共 3 個附件）"
+
+    c.on_image(2, kind="link")
+    assert c.vm.image_count == 2
+    assert c.vm.message == "已插入網址（共 2 個附件）"
+
+    c.on_image(1, kind="text")
+    assert c.vm.image_count == 1
+    assert c.vm.message == "已插入文字片段"
+
+    c.on_image(4, kind="image")
+    assert c.vm.image_count == 4
+    assert c.vm.message == "已插入圖片（共 4 個附件）"
+
+
 def test_controller_partial_fallback_notice_text():
     from local_typeless.ui.controller import FALLBACK_NOTICE
 
@@ -485,7 +508,7 @@ def test_controller_on_paste_callback_messages():
 
     # on_paste(0) -> notice that clipboard has no image
     c.on_paste(0)
-    assert c.vm.message == "剪貼簿沒有圖片（先截圖或複製圖片，再按貼上）"
+    assert c.vm.message == "剪貼簿沒有可插入的內容（先複製圖片、表格、網址、文字或檔案，再按貼上）"
 
     # on_image(1) followed by on_paste(1) -> on_image message preserved
     c.on_image(1)

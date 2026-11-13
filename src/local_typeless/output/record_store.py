@@ -8,7 +8,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Callable, Optional
 
-from local_typeless.textblocks import MARKER_RE
+from local_typeless.textblocks import ANY_MARKER_RE, MARKER_RE, marker_for
 from local_typeless.types import Mode, PipelineResult
 
 logger = logging.getLogger(__name__)
@@ -28,7 +28,7 @@ _IMAGE_DIR_RE = re.compile(r"^\d{8}-\d{6}-[0-9a-f]{6}$")
 def format_record_name(fmt: str, when: datetime, mode: Mode, text: str) -> str:
     """Format a record file name according to a template string."""
     # 1. Remove markers and [?]
-    cleaned = MARKER_RE.sub("", text).replace("[?]", "")
+    cleaned = ANY_MARKER_RE.sub("", text).replace("[?]", "")
 
     # 2. Remove characters not allowed in Windows file names and control chars
     cleaned = "".join(c for c in cleaned if c not in _ILLEGAL_FILENAME_CHARS and ord(c) >= 32)
@@ -84,15 +84,24 @@ class RecordStore:
                     counter += 1
                 target_file = month_dir / f"{name}_{counter}.md"
 
-            img_map = {img.index: img.path.replace("\\", "/") for img in result.images}
+            marker_map = {marker_for(img): img for img in result.images}
 
-            def _repl_image(m: re.Match) -> str:
-                idx = int(m.group(1))
-                if idx in img_map:
-                    return f"![圖{idx}]({img_map[idx]})"
-                return m.group(0)
+            def _repl_attachment(m: re.Match) -> str:
+                token = m.group(0)
+                item = marker_map.get(token)
+                if item is not None:
+                    kind = getattr(item, "kind", "image")
+                    if kind == "image":
+                        return f"![圖{item.index}]({item.path.replace('\\', '/')})"
+                    elif kind == "table":
+                        return f"\n\n{item.text.strip()}\n\n"
+                    elif kind in ("link", "text"):
+                        return item.text
+                    elif kind == "file":
+                        return f"`{item.text}`"
+                return token
 
-            rendered_final = MARKER_RE.sub(_repl_image, result.final_text)
+            rendered_final = ANY_MARKER_RE.sub(_repl_attachment, result.final_text)
 
             content = (
                 f"---\n"

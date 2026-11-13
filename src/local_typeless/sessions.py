@@ -8,7 +8,7 @@ import time
 import wave
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Optional, Union
+from typing import Callable, List, Optional, Tuple, Union
 
 from local_typeless.pipeline import (
     load_image_manifest,
@@ -18,6 +18,7 @@ from local_typeless.textblocks import marker, place_markers
 from local_typeless.types import (
     AudioChunk,
     CapturedImage,
+    DraftPiece,
     Mode,
     PipelineResult,
     Segment,
@@ -39,6 +40,8 @@ class Job:
     error: str = ""
     result: Optional[PipelineResult] = None
     failed_chunks: list = field(default_factory=list)   # [(AudioChunk, wav path)]
+    piece_seq: int = 0
+    prev_raw: str = ""
 
 
 class SessionManager:
@@ -54,6 +57,8 @@ class SessionManager:
         on_job: Optional[Callable[[Job, int], None]] = None,
         on_segment: Optional[Callable[[Job], None]] = None,
         on_result: Optional[Callable[[Job, PipelineResult], None]] = None,
+        draft_mode: bool = False,
+        on_piece: Optional[Callable[[DraftPiece], None]] = None,
     ) -> None:
         self.pipeline = pipeline
         self.recorder = recorder
@@ -62,6 +67,8 @@ class SessionManager:
         self.on_job = on_job
         self.on_segment = on_segment
         self.on_result = on_result
+        self.draft_mode = draft_mode
+        self.on_piece = on_piece
 
         self._lock = threading.RLock()
         self._stt_queue: queue.Queue = queue.Queue()
@@ -113,6 +120,13 @@ class SessionManager:
                 self.on_result(job, result)
             except Exception as e:
                 logger.warning("on_result callback raised: %s: %s", type(e).__name__, e)
+
+    def _fire_on_piece(self, piece: DraftPiece) -> None:
+        if self.on_piece is not None:
+            try:
+                self.on_piece(piece)
+            except Exception as e:
+                logger.warning("on_piece callback raised: %s: %s", type(e).__name__, e)
 
     def start(self) -> None:
         """Start worker threads (idempotent)."""
@@ -167,7 +181,7 @@ class SessionManager:
             self._fire_on_job(job, pending_count)
             raise
 
-        if self.watcher is not None:
+        if not self.draft_mode and self.watcher is not None:
             try:
                 self.watcher.start()
             except Exception as e:
@@ -187,7 +201,7 @@ class SessionManager:
         try:
             self.recorder.stop()
         except Exception as e:
-            if self.watcher is not None:
+            if not self.draft_mode and self.watcher is not None:
                 try:
                     self.watcher.cancel()
                 except Exception:
@@ -201,7 +215,7 @@ class SessionManager:
             return job
 
         images: List[CapturedImage] = []
-        if self.watcher is not None:
+        if not self.draft_mode and self.watcher is not None:
             try:
                 images = self.watcher.stop()
             except Exception as e:
@@ -209,10 +223,11 @@ class SessionManager:
 
         with self._lock:
             job.images = images
-            try:
-                save_image_manifest(self.cache_dir, job.images)
-            except Exception as e:
-                logger.warning("save_image_manifest failed: %s: %s", type(e).__name__, e)
+            if not self.draft_mode:
+                try:
+                    save_image_manifest(self.cache_dir, job.images)
+                except Exception as e:
+                    logger.warning("save_image_manifest failed: %s: %s", type(e).__name__, e)
 
             if job.status == "recording":
                 job.status = "transcribing"
@@ -237,7 +252,7 @@ class SessionManager:
         except Exception as e:
             logger.warning("recorder.cancel failed: %s: %s", type(e).__name__, e)
 
-        if self.watcher is not None:
+        if not self.draft_mode and self.watcher is not None:
             try:
                 self.watcher.cancel()
             except Exception as e:
@@ -255,7 +270,8 @@ class SessionManager:
         with self._lock:
             recording = self._is_recording
             watcher = self.watcher
-        if not recording or watcher is None:
+            draft_mode = self.draft_mode
+        if draft_mode or not recording or watcher is None:
             return 0
         try:
             return watcher.capture_now()
@@ -360,7 +376,7 @@ class SessionManager:
             wf.setframerate(chunk.sample_rate)
             wf.writeframes(chunk.pcm)
         try:
-            self._transcribe_chunk(job, chunk, chunk_path)
+            raw_text, duration = self._transcribe_chunk(job, chunk, chunk_path)
         except Exception as e:
             logger.warning("job %d chunk %d STT failed (%s: %s); will retry at end",
                            job.id, chunk.index, type(e).__name__, e)
@@ -368,12 +384,19 @@ class SessionManager:
                 job.failed_chunks.append((chunk, chunk_path))
             return
         self._unlink(chunk_path)
+        if self.draft_mode and raw_text and raw_text.strip():
+            with self._lock:
+                skip = job.status in ("cancelled", "abandoned", "error")
+            if not skip:
+                start_sec = chunk.start_sec
+                end_sec = chunk.start_sec + duration
+                self._llm_queue.put(("piece", job, raw_text, start_sec, end_sec))
 
-    def _transcribe_chunk(self, job: Job, chunk: AudioChunk, chunk_path: Path) -> None:
+    def _transcribe_chunk(self, job: Job, chunk: AudioChunk, chunk_path: Path) -> Tuple[str, float]:
         duration = len(chunk.pcm) / (chunk.sample_rate * 2)
         with self._lock:
             imgs = list(job.images) if job.images else (
-                list(self.watcher.images) if self.watcher is not None else [])
+                list(self.watcher.images) if (not self.draft_mode and self.watcher is not None) else [])
         wt = any(chunk.start_sec <= img.t_sec < chunk.start_sec + duration for img in imgs)
         kwargs: dict = {"initial_prompt": self.pipeline.glossary.build_whisper_initial_prompt()}
         if wt:
@@ -406,6 +429,8 @@ class SessionManager:
                 fire_seg = True
         if fire_seg:
             self._fire_on_segment(job)
+        raw_text = res.raw_text or "".join(s.text for s in shifted)
+        return raw_text, duration
 
     # -------------------------------------------------------- worker threads
     def _stt_worker(self) -> None:
@@ -437,15 +462,25 @@ class SessionManager:
                     with self._lock:
                         failed, job.failed_chunks = list(job.failed_chunks), []
                     for chunk, chunk_path in failed:
-                        self._transcribe_chunk(job, chunk, chunk_path)
+                        raw_text, duration = self._transcribe_chunk(job, chunk, chunk_path)
                         self._unlink(chunk_path)
+                        if self.draft_mode and raw_text and raw_text.strip():
+                            with self._lock:
+                                skip_piece = job.status in ("cancelled", "abandoned", "error")
+                            if not skip_piece:
+                                start_sec = chunk.start_sec
+                                end_sec = chunk.start_sec + duration
+                                self._llm_queue.put(("piece", job, raw_text, start_sec, end_sec))
 
                     fire_job = False
                     with self._lock:
                         if job.status not in ("cancelled", "abandoned", "error"):
                             job.text = place_markers(job.segments, job.images)
                             job.status = "refining"
-                            self._llm_queue.put(job)
+                            if self.draft_mode:
+                                self._llm_queue.put(("end_job", job))
+                            else:
+                                self._llm_queue.put(job)
                             pending_count = self.pending
                             fire_job = True
 
@@ -486,7 +521,13 @@ class SessionManager:
                                     for img in sorted(job.images, key=lambda x: x.index)
                                 )
                             job.status = "refining"
-                            self._llm_queue.put(job)
+                            if self.draft_mode:
+                                dur = getattr(res, "duration_sec", 0.0)
+                                if res.raw_text and res.raw_text.strip():
+                                    self._llm_queue.put(("piece", job, res.raw_text, 0.0, dur))
+                                self._llm_queue.put(("end_job", job))
+                            else:
+                                self._llm_queue.put(job)
                             pending_count = self.pending
                             fire_job = True
 
@@ -511,58 +552,101 @@ class SessionManager:
 
     def _llm_worker(self) -> None:
         while True:
-            job = self._llm_queue.get()
-            if job is None:
+            item = self._llm_queue.get()
+            if item is None:
                 self._llm_queue.task_done()
                 break
 
             self._llm_in_flight = True
 
-            with self._lock:
-                skip = job.status in ("abandoned", "cancelled", "error")
-
-            if skip:
-                self._llm_queue.task_done()
-                self._llm_in_flight = False
-                continue
-
             try:
-                result = self.pipeline.run_text(
-                    job.text, job.mode, images=job.images or None
-                )
-                result.stt_elapsed_sec = job.stt_elapsed
+                if isinstance(item, tuple):
+                    kind = item[0]
+                    if kind == "piece":
+                        _, job, raw_text, start_sec, end_sec = item
+                        with self._lock:
+                            skip = job.status in ("abandoned", "cancelled", "error")
+                            prev_raw = job.prev_raw
+                        if not skip:
+                            refined_text, fallback = self.pipeline.refine_piece(raw_text, prev_raw=prev_raw)
+                            piece = None
+                            with self._lock:
+                                if job.status not in ("abandoned", "cancelled", "error"):
+                                    job.prev_raw += raw_text
+                                    seq = job.piece_seq
+                                    job.piece_seq += 1
+                                    piece = DraftPiece(
+                                        job_id=job.id,
+                                        seq=seq,
+                                        start_sec=start_sec,
+                                        end_sec=end_sec,
+                                        raw_text=raw_text,
+                                        text=refined_text,
+                                        fallback=fallback,
+                                    )
+                            if piece is not None:
+                                self._fire_on_piece(piece)
 
-                # Wait for the idle gate in a loop with 0.2s timeout
-                while not self._idle_gate.wait(0.2):
-                    if self._stopping:
-                        break
+                    elif kind == "end_job":
+                        _, job = item
+                        with self._lock:
+                            skip = job.status in ("abandoned", "cancelled", "error")
+                        if not skip:
+                            # No idle gate here: nothing is pasted, and waiting would stall
+                            # the pieces of a recording started right after this one.
+                            fire_job = False
+                            with self._lock:
+                                if job.status not in ("abandoned", "cancelled", "error"):
+                                    job.status = "done"
+                                    pending_count = self.pending
+                                    fire_job = True
+                            if fire_job:
+                                self._fire_on_job(job, pending_count)
+
+                else:
+                    job = item
                     with self._lock:
-                        if job.status in ("abandoned", "cancelled"):
-                            break
+                        skip = job.status in ("abandoned", "cancelled", "error")
 
-                fire_res = False
-                with self._lock:
-                    if job.status not in ("abandoned", "cancelled"):
-                        job.result = result
-                        job.status = "done"
-                        pending_count = self.pending
-                        fire_res = True
+                    if not skip:
+                        result = self.pipeline.run_text(
+                            job.text, job.mode, images=job.images or None
+                        )
+                        result.stt_elapsed_sec = job.stt_elapsed
 
-                if fire_res:
-                    self._fire_on_result(job, result)
-                    self._fire_on_job(job, pending_count)
+                        # Wait for the idle gate in a loop with 0.2s timeout
+                        while not self._idle_gate.wait(0.2):
+                            if self._stopping:
+                                break
+                            with self._lock:
+                                if job.status in ("abandoned", "cancelled"):
+                                    break
+
+                        fire_res = False
+                        with self._lock:
+                            if job.status not in ("abandoned", "cancelled"):
+                                job.result = result
+                                job.status = "done"
+                                pending_count = self.pending
+                                fire_res = True
+
+                        if fire_res:
+                            self._fire_on_result(job, result)
+                            self._fire_on_job(job, pending_count)
 
             except Exception as e:
-                logger.warning("LLM worker exception on job %d: %s", job.id, e)
-                fire_err = False
-                with self._lock:
-                    if job.status not in ("abandoned", "cancelled"):
-                        job.status = "error"
-                        job.error = f"{type(e).__name__}: {e}"
-                        pending_count = self.pending
-                        fire_err = True
-                if fire_err:
-                    self._fire_on_job(job, pending_count)
+                logger.warning("LLM worker exception: %s", e)
+                job_target = item if isinstance(item, Job) else (item[1] if isinstance(item, tuple) and len(item) > 1 else None)
+                if job_target is not None:
+                    fire_err = False
+                    with self._lock:
+                        if job_target.status not in ("abandoned", "cancelled"):
+                            job_target.status = "error"
+                            job_target.error = f"{type(e).__name__}: {e}"
+                            pending_count = self.pending
+                            fire_err = True
+                    if fire_err:
+                        self._fire_on_job(job_target, pending_count)
 
             finally:
                 self._llm_queue.task_done()

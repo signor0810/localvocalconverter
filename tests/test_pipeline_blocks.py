@@ -1,6 +1,7 @@
 """Tests for Pipeline block-wise refine, marker validation, and image plumbing (Task 3)."""
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
@@ -263,6 +264,40 @@ def test_image_manifest_operations(tmp_path):
     manifest_file = cache_dir / IMAGE_MANIFEST
     manifest_file.write_text("{corrupt json", encoding="utf-8")
     assert load_image_manifest(cache_dir) == []
+
+    # Legacy manifest (no kind, text, html fields) compatibility
+    legacy_json = json.dumps([
+        {"index": 1, "t_sec": 1.5, "path": str(img2_file)}
+    ])
+    manifest_file.write_text(legacy_json, encoding="utf-8")
+    legacy_loaded = load_image_manifest(cache_dir)
+    assert len(legacy_loaded) == 1
+    assert legacy_loaded[0].kind == "image"
+    assert legacy_loaded[0].text == ""
+    assert legacy_loaded[0].html == ""
+    assert legacy_loaded[0].index == 1
+
+    # Mixed attachments manifest (table with file, link/text with path="")
+    tab_file = tmp_path / "tab.md"
+    tab_file.write_text("| a |\n| - |\n| 1 |", encoding="utf-8")
+    tab = CapturedImage(index=1, t_sec=1.0, path=str(tab_file), kind="table", text="| a |\n| - |\n| 1 |", html="<table></table>")
+    lnk = CapturedImage(index=2, t_sec=2.0, path="", kind="link", text="https://example.com")
+    txt = CapturedImage(index=3, t_sec=3.0, path="", kind="text", text="文字片段")
+
+    save_image_manifest(cache_dir, [tab, lnk, txt])
+    mixed_loaded = load_image_manifest(cache_dir)
+    assert len(mixed_loaded) == 3
+    assert mixed_loaded[0] == tab
+    assert mixed_loaded[1] == lnk
+    assert mixed_loaded[2] == txt
+
+    # Missing table .md file is still kept if text is non-empty
+    tab_file.unlink()
+    loaded_tab_no_file = load_image_manifest(cache_dir)
+    assert len(loaded_tab_no_file) == 3
+    assert loaded_tab_no_file[0].index == 1
+    assert loaded_tab_no_file[0].text == "| a |\n| - |\n| 1 |"
+
 
 
 # 10. retry_last picks up manifest; history contains images; retry_last(llm_only=True) restores them
