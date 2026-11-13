@@ -447,3 +447,169 @@ def test_paste_mode_not_running_returns_zero(tmp_path: Path):
     watcher = ClipboardImageWatcher(tmp_path, backend)
     # Not started
     assert watcher.capture_now() == 0
+
+
+class RichFakeClipboardBackend:
+    def __init__(
+        self,
+        seq: int = 100,
+        pngs: Optional[List[bytes]] = None,
+        html: str = "",
+        text: str = "",
+    ) -> None:
+        self.seq = seq
+        self.pngs = pngs if pngs is not None else []
+        self.html = html
+        self.text = text
+
+    def sequence(self) -> int:
+        return self.seq
+
+    def grab_png(self) -> List[bytes]:
+        return list(self.pngs)
+
+    def grab_html(self) -> str:
+        return self.html
+
+    def grab_text(self) -> str:
+        return self.text
+
+
+def test_capture_now_table_html_priority_over_image(tmp_path: Path):
+    # Excel simulation: HTML with table AND image bytes both present
+    html = "Version:0.9\r\n<!--StartFragment--><table><tr><th>A</th><th>B</th></tr><tr><td>1</td><td>2</td></tr></table><!--EndFragment-->"
+    png = make_png_bytes("green")
+    backend = RichFakeClipboardBackend(html=html, pngs=[png])
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    assert watcher.count == 1
+    item = watcher.images[0]
+    assert item.kind == "table"
+    assert "| A | B |" in item.text
+    assert "<table>" in item.html
+    p_md = Path(item.path)
+    assert p_md.is_file()
+    assert p_md.name == "table_1.md"
+    p_html = p_md.with_suffix(".html")
+    assert p_html.is_file()
+
+
+def test_capture_now_table_tsv(tmp_path: Path):
+    tsv = "Header1\tHeader2\r\nVal1\tVal2\r\n"
+    backend = RichFakeClipboardBackend(text=tsv)
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    assert watcher.count == 1
+    item = watcher.images[0]
+    assert item.kind == "table"
+    assert "| Header1 | Header2 |" in item.text
+    assert "<table>" in item.html
+    p_md = Path(item.path)
+    assert p_md.is_file()
+    assert p_md.name == "table_1.md"
+
+
+def test_capture_now_link(tmp_path: Path):
+    url = "https://github.com/example/repo"
+    backend = RichFakeClipboardBackend(text=f"  {url}  \n")
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    item = watcher.images[0]
+    assert item.kind == "link"
+    assert item.path == ""
+    assert item.text == url
+
+
+def test_capture_now_text_snippet_and_truncation(tmp_path: Path, caplog: pytest.LogCaptureFixture):
+    snippet = "这是一段复制的文字内容"
+    backend = RichFakeClipboardBackend(text=snippet)
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    item = watcher.images[0]
+    assert item.kind == "text"
+    assert item.path == ""
+    assert item.text == snippet
+
+    # Test truncation at 20000 characters
+    long_text = "A" * 25000
+    backend.text = long_text
+    with caplog.at_level("WARNING"):
+        added_long = watcher.capture_now()
+    assert added_long == 1
+    item_long = watcher.images[1]
+    assert item_long.kind == "text"
+    assert len(item_long.text) == 20000
+    assert "truncated" in caplog.text
+
+
+def test_capture_now_none_returns_zero(tmp_path: Path):
+    backend = RichFakeClipboardBackend(text="   \n\t  ")
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    assert watcher.capture_now() == 0
+    assert watcher.count == 0
+
+
+def test_auto_mode_ignores_tables_and_text(tmp_path: Path):
+    html = "<table><tr><td>1</td></tr></table>"
+    backend = RichFakeClipboardBackend(seq=100, html=html, text="https://example.com")
+    watcher = ClipboardImageWatcher(tmp_path, backend, trigger="auto")
+    watcher.start()
+
+    backend.seq = 101
+    watcher.poll_once()
+    assert watcher.count == 0
+
+
+def test_text_snippet_blank_lines_stripped_internal_kept(tmp_path: Path):
+    raw = "\n\n   \nLine 1\n  Indented Line 2\n\nLine 3\n\n  \n"
+    backend = RichFakeClipboardBackend(text=raw)
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    assert watcher.images[0].text == "Line 1\n  Indented Line 2\n\nLine 3"
+
+
+def test_on_image_callback_type_error_inside_not_called_twice(tmp_path: Path):
+    calls = []
+
+    def callback_with_bug(count: int, kind: str):
+        calls.append((count, kind))
+        raise TypeError("internal bug inside callback")
+
+    backend = RichFakeClipboardBackend(pngs=[make_png_bytes("red")])
+    watcher = ClipboardImageWatcher(tmp_path, backend, on_image=callback_with_bug)
+    watcher.start()
+
+    watcher.capture_now()
+    # Must only be called once, not retried
+    assert len(calls) == 1
+
+
+def test_html_with_too_much_outside_text_falls_through_to_text(tmp_path: Path):
+    html = "<p>This is a long paragraph before the table that makes this not just a table.</p><table><tr><td>1</td><td>2</td></tr></table>"
+    backend = RichFakeClipboardBackend(html=html, text="Just text")
+    watcher = ClipboardImageWatcher(tmp_path, backend)
+    watcher.start()
+
+    added = watcher.capture_now()
+    assert added == 1
+    # Not a table -> fell through to text
+    assert watcher.images[0].kind == "text"
+
+

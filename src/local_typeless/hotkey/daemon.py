@@ -68,11 +68,13 @@ class HotkeyStateMachine:
         notify: Optional[Callable[[str], None]] = None,
         on_change: Optional[Callable[[State, Optional[Mode], str], None]] = None,
         background: bool = False,
+        allow_paste_anytime: bool = False,
     ) -> None:
         self.push_to_talk = push_to_talk
         self._notify = notify or (lambda msg: None)
         self._on_change = on_change
         self.background = background
+        self.allow_paste_anytime = allow_paste_anytime
         self._lock = threading.Lock()
         self._state = State.IDLE
         self._mode: Optional[Mode] = None
@@ -103,7 +105,7 @@ class HotkeyStateMachine:
                 return None  # only acts while RECORDING
 
             if ev.kind == "paste_image":
-                if self._state is State.RECORDING:
+                if self.allow_paste_anytime or self._state is State.RECORDING:
                     return Action("paste_image")
                 return None
 
@@ -306,6 +308,7 @@ class Daemon:
         sessions: Optional[Any] = None,
         on_jobs: Optional[Callable[[int, str], None]] = None,
         on_paste: Optional[Callable[[int], None]] = None,
+        on_paste_request: Optional[Callable[[], None]] = None,
     ) -> None:
         """on_state(state, mode, note) fires on every transition (hook or worker thread);
         on_result(PipelineResult) fires on the worker thread right after run_file, before
@@ -315,6 +318,7 @@ class Daemon:
         self.sessions = sessions
         self.on_jobs = on_jobs
         self.on_paste = on_paste
+        self.on_paste_request = on_paste_request
         self._newest_job_id: Optional[int] = None
         self.on_result = on_result
         self.on_segment = on_segment
@@ -336,6 +340,7 @@ class Daemon:
             notify=self._status,
             on_change=on_state,
             background=(sessions is not None),
+            allow_paste_anytime=(on_paste_request is not None),
         )
         self._actions: "queue.Queue[Any]" = queue.Queue()
         self._status_q: "queue.Queue[Any]" = queue.Queue()
@@ -522,6 +527,12 @@ class Daemon:
 
     def _execute(self, action: Action) -> None:
         if action.kind == "paste_image":
+            if self.on_paste_request is not None:
+                try:
+                    self.on_paste_request()
+                except Exception as e:
+                    logger.warning("on_paste_request callback failed: %s: %s", type(e).__name__, e)
+                return
             added = 0
             try:
                 if self.sessions is not None:

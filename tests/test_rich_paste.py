@@ -13,7 +13,12 @@ from local_typeless.output.rich_paste import RichPaster, set_clipboard_image
 from local_typeless.types import CapturedImage, Mode, OutputConfig
 
 
-def make_harness(cfg: Optional[OutputConfig] = None):
+def make_harness(
+    cfg: Optional[OutputConfig] = None,
+    *,
+    set_table=None,
+    foreground_app: Optional[Callable[[], str]] = None,
+):
     calls = []
 
     def fake_copy(t: str) -> None:
@@ -21,6 +26,9 @@ def make_harness(cfg: Optional[OutputConfig] = None):
 
     def fake_image(p: Union[str, Path]) -> None:
         calls.append(("image", str(p)))
+
+    def fake_table_default(item: CapturedImage, fmt: str) -> None:
+        calls.append(("table", item, fmt))
 
     def fake_paste() -> None:
         calls.append(("paste",))
@@ -32,6 +40,8 @@ def make_harness(cfg: Optional[OutputConfig] = None):
         cfg or OutputConfig(),
         copy_text=fake_copy,
         set_image=fake_image,
+        set_table=set_table or fake_table_default,
+        foreground_app=foreground_app or (lambda: "winword.exe"),
         paste=fake_paste,
         sleep=fake_sleep,
     )
@@ -120,6 +130,7 @@ def test_set_image_raising_oserror_falls_back_to_marker():
         OutputConfig(),
         copy_text=lambda t: calls.append(("copy", t)),
         set_image=bad_image,
+        foreground_app=lambda: "",       # not the terminal the tests happen to run in
         paste=lambda: calls.append(("paste",)),
         sleep=lambda s: calls.append(("sleep", s)),
     )
@@ -190,3 +201,109 @@ def test_clipboard_output_emit_with_copy_with_retry():
         out = ClipboardOutput(OutputConfig(clipboard=True, auto_paste=False))
         out.emit("test extraction", Mode.CLEAN)
     assert copied == ["test extraction"]
+
+
+def test_link_and_text_inlined_without_extra_paste():
+    paster, calls = make_harness()
+    link_item = CapturedImage(index=1, t_sec=1.0, path="", kind="link", text="https://example.com")
+    text_item = CapturedImage(index=2, t_sec=2.0, path="", kind="text", text="一段補充文字")
+
+    # Only link and text: single copy + single paste, no sleep
+    paster.emit_rich("參考 [連結1] 以及 [文字2]", [link_item, text_item])
+    assert calls == [
+        ("copy", "參考 https://example.com 以及 一段補充文字"),
+        ("paste",),
+    ]
+
+
+def test_table_paste_formats():
+    tab = CapturedImage(index=1, t_sec=1.0, path="/tab.md", kind="table", text="| A | B |\n| --- | --- |\n| 1 | 2 |", html="<table>...</table>")
+
+    # auto format: foreground app is in table_html_apps -> "html"
+    paster_word, calls_word = make_harness(
+        OutputConfig(table_paste_format="auto"),
+        foreground_app=lambda: "winword.exe",
+    )
+    paster_word.emit_rich("前 [表1] 後", [tab])
+    assert calls_word == [
+        ("copy", "前 "),
+        ("paste",),
+        ("sleep", 0.3),
+        ("table", tab, "html"),
+        ("paste",),
+        ("sleep", 0.3),
+        ("copy", " 後"),
+        ("paste",),
+        ("sleep", 0.3),
+    ]
+
+    # auto format: foreground app NOT in table_html_apps (e.g. Chrome/Notepad) -> "markdown" via copy_text
+    paster_chrome, calls_chrome = make_harness(
+        OutputConfig(table_paste_format="auto"),
+        foreground_app=lambda: "chrome.exe",
+    )
+    paster_chrome.emit_rich("[表1]", [tab])
+    assert calls_chrome == [
+        ("copy", "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"),
+        ("paste",),
+    ]
+
+    # markdown format: always via copy_text
+    paster_md, calls_md = make_harness(OutputConfig(table_paste_format="markdown"))
+    paster_md.emit_rich("[表1]", [tab])
+    assert calls_md == [
+        ("copy", "| A | B |\n| --- | --- |\n| 1 | 2 |\n\n"),
+        ("paste",),
+    ]
+
+    # html format: always calls set_table with "html"
+    paster_html, calls_html = make_harness(
+        OutputConfig(table_paste_format="html"),
+        foreground_app=lambda: "chrome.exe",
+    )
+    paster_html.emit_rich("[表1]", [tab])
+    assert calls_html == [
+        ("table", tab, "html"),
+        ("paste",),
+        ("sleep", 0.3),
+    ]
+
+
+def test_single_pass_substitution_no_recursive_expansion():
+    paster, calls = make_harness()
+    txt = CapturedImage(index=1, t_sec=1.0, path="", kind="text", text="文字包含 [圖2] 標記")
+    paster.emit_rich("前言 [文字1] 結尾", [txt])
+    assert calls == [
+        ("copy", "前言 文字包含 [圖2] 標記 結尾"),
+        ("paste",),
+    ]
+
+
+
+def test_table_paste_failure_falls_back_to_markdown():
+    def bad_table(item: CapturedImage, fmt: str) -> None:
+        raise OSError("failed to set clipboard table")
+
+    paster, calls = make_harness(OutputConfig(table_paste_format="html"), set_table=bad_table)
+    tab = CapturedImage(index=1, t_sec=1.0, path="/tab.md", kind="table", text="| A |\n| - |\n| 1 |")
+    paster.emit_rich("前 [表1]", [tab])
+    assert calls == [
+        ("copy", "前 "),
+        ("paste",),
+        ("sleep", 0.3),
+        ("copy", "\n| A |\n| - |\n| 1 |\n"),
+        ("paste",),
+        ("sleep", 0.3),
+    ]
+
+
+
+def test_markdown_table_is_inlined_on_its_own_lines():
+    tab = CapturedImage(index=1, t_sec=1.0, path="/tab.md", kind="table",
+                        text="| A | B |\n| --- | --- |\n| 1 | 2 |")
+    paster, calls = make_harness(OutputConfig(table_paste_format="auto"), foreground_app=lambda: "chrome.exe")
+    paster.emit_rich("結果如下[表1]以上。", [tab])
+    assert calls == [
+        ("copy", "結果如下\n\n| A | B |\n| --- | --- |\n| 1 | 2 |\n\n以上。"),
+        ("paste",),
+    ]

@@ -6,13 +6,14 @@ Validates configurations internally with Pydantic, returning the dataclass AppCo
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 import yaml
 from pydantic import BaseModel, Field, ValidationError, model_validator
 
 from local_typeless.types import (
     AppConfig,
+    DraftConfig,
     HotkeyConfig,
     ImagesConfig,
     LLMProfileConfig,
@@ -80,6 +81,47 @@ class _PydanticOutput(BaseModel):
     protect_image_clipboard: bool = True
     obsidian_note_path: Optional[str] = None
     paste_step_delay_ms: int = Field(default=300, ge=0)
+    table_paste_format: str = "auto"
+    table_html_apps: List[str] = Field(
+        default_factory=lambda: [
+            "winword.exe",
+            "powerpnt.exe",
+            "outlook.exe",
+            "olk.exe",
+            "excel.exe",
+            "onenote.exe",
+            "ms-teams.exe",
+            "teams.exe",
+        ]
+    )
+
+    image_paste_mode: str = "auto"
+    path_paste_apps: List[str] = Field(
+        default_factory=lambda: [
+            "windowsterminal.exe",
+            "wt.exe",
+            "cmd.exe",
+            "powershell.exe",
+            "pwsh.exe",
+            "conhost.exe",
+            "openconsole.exe",
+            "wezterm-gui.exe",
+            "alacritty.exe",
+            "mintty.exe",
+        ]
+    )
+
+    @model_validator(mode="after")
+    def _validate_table_paste_format(self) -> _PydanticOutput:
+        if self.image_paste_mode not in ("auto", "image", "path"):
+            raise ValueError(
+                f"output.image_paste_mode must be 'auto', 'image', or 'path', got {self.image_paste_mode!r}"
+            )
+        if self.table_paste_format not in ("auto", "markdown", "html"):
+            raise ValueError(
+                f"output.table_paste_format must be 'auto', 'markdown', or 'html', got {self.table_paste_format!r}"
+            )
+        return self
 
 
 class _PydanticHotkeys(BaseModel):
@@ -154,6 +196,11 @@ class _PydanticStorage(BaseModel):
         return self
 
 
+class _PydanticDraft(BaseModel):
+    enabled: bool = True
+    autosave: bool = True
+
+
 class _PydanticAppConfig(BaseModel):
     stt_profiles: Dict[str, _PydanticSTTProfile] = Field(default_factory=dict)
     active_stt_profile: str = "cpu_fast"
@@ -171,6 +218,7 @@ class _PydanticAppConfig(BaseModel):
     streaming: _PydanticStreaming = Field(default_factory=_PydanticStreaming)
     refine: _PydanticRefine = Field(default_factory=_PydanticRefine)
     storage: _PydanticStorage = Field(default_factory=_PydanticStorage)
+    draft: _PydanticDraft = Field(default_factory=_PydanticDraft)
 
 
 def _resolve_project_path(path_str: Optional[str], project_root: Path) -> Optional[str]:
@@ -237,6 +285,10 @@ def _convert_to_dataclass(validated: _PydanticAppConfig, project_root: Path) -> 
         protect_image_clipboard=validated.output.protect_image_clipboard,
         obsidian_note_path=resolved_obsidian_path,
         paste_step_delay_ms=validated.output.paste_step_delay_ms,
+        table_paste_format=validated.output.table_paste_format,
+        table_html_apps=list(validated.output.table_html_apps),
+        image_paste_mode=validated.output.image_paste_mode,
+        path_paste_apps=list(validated.output.path_paste_apps),
     )
 
     hotkeys = HotkeyConfig(
@@ -276,6 +328,11 @@ def _convert_to_dataclass(validated: _PydanticAppConfig, project_root: Path) -> 
         filename_format=validated.storage.filename_format,
     )
 
+    draft = DraftConfig(
+        enabled=validated.draft.enabled,
+        autosave=validated.draft.autosave,
+    )
+
     resolved_glossary = _resolve_project_path(validated.glossary_path, project_root) or ""
     resolved_prompts = _resolve_project_path(validated.prompts_dir, project_root) or ""
     resolved_cache = _resolve_project_path(validated.cache_dir, project_root) or ""
@@ -297,6 +354,7 @@ def _convert_to_dataclass(validated: _PydanticAppConfig, project_root: Path) -> 
         streaming=streaming,
         refine=refine,
         storage=storage,
+        draft=draft,
     )
 
 

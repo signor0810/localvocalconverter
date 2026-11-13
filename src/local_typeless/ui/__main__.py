@@ -112,8 +112,22 @@ def main(argv: Optional[List[str]] = None) -> int:
         hotkey_hints=hotkey_hints,
     )
 
+    # Draft window flow: each chunk is cleaned while recording and lands in an editable
+    # draft; nothing is pasted automatically. It needs the streaming recorder.
+    draft_bridge = None
+    if cfg.draft.enabled and use_streaming:
+        from local_typeless.ui.draft_bridge import DraftBridge
+
+        draft_bridge = DraftBridge(
+            pipeline,
+            images_dir=Path(cfg.storage.images_dir),
+            cache_dir=Path(cfg.cache_dir),
+            autosave=cfg.draft.autosave,
+        )
+        draft_bridge.toggle_record = controller.record_clicked
+
     image_watcher = None
-    if cfg.images.enabled and sys.platform == "win32":
+    if draft_bridge is None and cfg.images.enabled and sys.platform == "win32":
         from local_typeless.capture.clipboard_images import ClipboardImageWatcher
 
         image_watcher = ClipboardImageWatcher(
@@ -123,6 +137,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             keep_sessions=None,
             trigger=cfg.images.trigger,
         )
+        controller.file_adder = image_watcher.add_files
 
     # The panel's record button is a toggle, whatever the hotkey mode in the config is.
     hotkeys = dataclasses.replace(cfg.hotkeys, mode="toggle")
@@ -131,7 +146,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         from local_typeless.sessions import SessionManager
 
         manager = SessionManager(
-            pipeline, recorder, watcher=image_watcher, cache_dir=cfg.cache_dir
+            pipeline, recorder, watcher=image_watcher, cache_dir=cfg.cache_dir,
+            draft_mode=draft_bridge is not None,
+            on_piece=draft_bridge.on_piece if draft_bridge is not None else None,
         )
 
         def on_jobs(pending: int, note: str) -> None:
@@ -152,6 +169,7 @@ def main(argv: Optional[List[str]] = None) -> int:
             sessions=manager,
             on_jobs=on_jobs,
             on_paste=controller.on_paste,
+            on_paste_request=(draft_bridge.on_paste_request if draft_bridge is not None else None),
         )
     else:
         def on_state(state, mode, note):
@@ -201,7 +219,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         return TeachController(cfg, lambda: create_llm_client(cfg.llm), make_pipeline)
 
-    app = PanelApp(controller, on_close=on_close, teach_factory=teach_factory)
+    def review_factory():
+        from local_typeless.ui.review_controller import ReviewController
+
+        return ReviewController(cfg, lambda: create_llm_client(cfg.llm))
+
+    app = PanelApp(
+        controller,
+        on_close=on_close,
+        teach_factory=teach_factory,
+        review_factory=review_factory,
+        draft_bridge=draft_bridge,
+    )
     try:
         app.run(auto_close_sec=args.auto_close)
     except KeyboardInterrupt:

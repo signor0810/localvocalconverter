@@ -113,12 +113,17 @@ class PanelApp:
         *,
         on_close: Optional[Callable[[], None]] = None,
         teach_factory: Optional[Callable[[], Any]] = None,
+        review_factory: Optional[Callable[[], Any]] = None,
+        draft_bridge: Any = None,
     ) -> None:
         enable_dpi_awareness()
         self.ctl = controller
         self._on_close = on_close
         self._teach_factory = teach_factory      # -> TeachController; None disables teach mode
         self._teach_win: Any = None
+        self._review_factory = review_factory    # -> ReviewController; None disables review mode
+        self._review_win: Any = None
+        self._draft = draft_bridge               # DraftBridge; None = classic paste-when-done flow
         self.root = tk.Tk()
         self.root.title("Local Typeless")
         self.root.attributes("-topmost", True)
@@ -132,8 +137,22 @@ class PanelApp:
         self._build()
         self._dock()
         self.no_activate = make_no_activate(self.root)
+        from local_typeless.ui.file_drop import enable_file_drop
+
+        self._file_drop = enable_file_drop(self.root)
         self.root.protocol("WM_DELETE_WINDOW", self.close)
         self._bind_teach()
+        if self._draft is not None:
+            # Single-window mode: the draft editor is the app; the side panel stays hidden
+            # and only keeps driving the controller.
+            items = []
+            if self._review_factory is not None:
+                items.append(("檢查口述紀錄…", self.open_review))
+            if self._teach_factory is not None:
+                items.append(("教學模式…", self.open_teach))
+            self._draft.cancel_record = self.ctl.cancel_clicked
+            self._draft.open(self.root, on_close=self.close, menu_items=items)
+            self.root.withdraw()
         self.root.after(TICK_MS, self._tick)
 
     # ------------------------------------------------------------- layout
@@ -178,7 +197,7 @@ class PanelApp:
         self.ctl_row.pack(fill="x", padx=8)
         self.cancel_btn = ttk.Button(self.ctl_row, text="取消 (Esc)", command=self.ctl.cancel_clicked)
         self.cancel_btn.pack(side="left", expand=True, fill="x")
-        self.paste_image_btn = ttk.Button(self.ctl_row, text="貼上圖片", command=self.ctl.paste_image_clicked)
+        self.paste_image_btn = ttk.Button(self.ctl_row, text="貼上附件", command=self.ctl.paste_image_clicked)
         self.paste_image_btn.pack(side="left", expand=True, fill="x", padx=(4, 0))
         self.abandon_btn = ttk.Button(self.ctl_row, text="放棄", command=self.ctl.abandon_clicked)
         self.abandon_btn.pack(side="left", expand=True, fill="x", padx=4)
@@ -222,14 +241,20 @@ class PanelApp:
         text.pack(fill="both", expand=True)
         return text, copy_btn, ins, title_lbl
 
-    # ------------------------------------------------- hidden teach mode
+    # ------------------------------------------------- hidden teach mode & review
     def _bind_teach(self) -> None:
-        if self._teach_factory is None:
+        if self._teach_factory is None and self._review_factory is None and self._draft is None:
             return
-        for seq in ("<Control-Shift-T>", "<Control-Shift-t>"):
-            self.root.bind(seq, lambda _e: self.open_teach())
+        if self._teach_factory is not None:
+            for seq in ("<Control-Shift-T>", "<Control-Shift-t>"):
+                self.root.bind(seq, lambda _e: self.open_teach())
         menu = tk.Menu(self.root, tearoff=0)
-        menu.add_command(label="教學模式…", command=self.open_teach)
+        if self._draft is not None:
+            menu.add_command(label="草稿視窗", command=self._draft.show)
+        if self._teach_factory is not None:
+            menu.add_command(label="教學模式…", command=self.open_teach)
+        if self._review_factory is not None:
+            menu.add_command(label="檢查口述紀錄…", command=self.open_review)
 
         def popup(e: Any) -> None:
             menu.tk_popup(e.x_root, e.y_root)
@@ -255,6 +280,17 @@ class PanelApp:
 
         self._teach_win = TeachWindow(self.root, self._teach_factory(), self._selection)
         self._teach_win.lift()
+
+    def open_review(self) -> None:
+        if self._review_factory is None:
+            return
+        if self._review_win is not None and self._review_win._alive:
+            self._review_win.lift()
+            return
+        from local_typeless.ui.review_window import ReviewWindow
+
+        self._review_win = ReviewWindow(self.root, self._review_factory())
+        self._review_win.lift()
 
     # ------------------------------------------------------------- events
     def _mode_changed(self, _evt: Any = None) -> None:
@@ -291,7 +327,7 @@ class PanelApp:
         if vm.phase == "recording":
             elapsed = int(now - (vm.record_started or now))
             pulse_on = int(now * 2) % 2 == 0
-            img_suffix = f"  圖×{vm.image_count}" if getattr(vm, "image_count", 0) > 0 else ""
+            img_suffix = f"  附件×{vm.image_count}" if getattr(vm, "image_count", 0) > 0 else ""
             wc.configure(
                 self.rec_btn, text=f"●  錄音中  {elapsed} 秒（再按一次結束）{img_suffix}",
                 fg="#e60000" if pulse_on else "#7a0000", bg="#ffe9e9", state="normal")
@@ -309,7 +345,7 @@ class PanelApp:
         cancel_text = f"取消 ({cancel_hint})" if cancel_hint else "取消 (Esc)"
         wc.configure(self.cancel_btn, text=cancel_text, state="normal" if vm.phase == "recording" else "disabled")
         paste_hint = vm.hotkey_hints.get("paste_image") if getattr(vm, "hotkey_hints", None) else None
-        paste_text = f"貼上圖片 ({paste_hint})" if paste_hint else "貼上圖片"
+        paste_text = f"貼上附件 ({paste_hint})" if paste_hint else "貼上附件"
         wc.configure(self.paste_image_btn, text=paste_text, state="normal" if vm.phase == "recording" else "disabled")
         wc.configure(self.abandon_btn, state="normal" if (busy or vm.pending_jobs > 0) else "disabled")
         wc.configure(self.retry_btn, state="normal" if vm.phase == "idle" else "disabled")
@@ -366,6 +402,12 @@ class PanelApp:
 
     def _tick(self) -> None:
         try:
+            if self._file_drop is not None:
+                for paths in self._file_drop.poll():
+                    if self._draft is not None:
+                        self._draft.insert_files(paths)
+                    else:
+                        self.ctl.files_dropped(paths)
             vm = self.ctl.poll()
             now = time.monotonic()
             if vm is not None:
@@ -377,8 +419,27 @@ class PanelApp:
                   and now - self._last_timed >= TIMER_RENDER_SEC):
                 self.render(self._last_vm)     # drives the timer + pulse at 2 Hz
                 self._last_timed = now
+            if self._draft is not None:
+                self._tick_draft()
         finally:
             self.root.after(TICK_MS, self._tick)
+
+    def _tick_draft(self) -> None:
+        vm = self._last_vm
+        if vm is None:
+            self._draft.tick(False)
+            return
+        recording = vm.phase == "recording"
+        elapsed = int(time.monotonic() - (vm.record_started or time.monotonic())) if recording else 0
+        status = f"STT: {vm.stt_profile}   LLM: {vm.llm_status or vm.llm_profile}"
+        if vm.pending_jobs > 0:
+            status += f"   整理中 {vm.pending_jobs}"
+        message = vm.notice or vm.message
+        if not vm.hotkeys_ok:
+            message = (message + "  " if message else "") + "（全域快捷鍵無法使用）"
+        hint = vm.hotkey_hints.get(vm.mode.value, "") if getattr(vm, "hotkey_hints", None) else ""
+        self._draft.tick(recording, elapsed_sec=elapsed, status=status, message=message,
+                         record_hint=hint)
 
     # ------------------------------------------------------------ lifecycle
     def close(self) -> None:
@@ -387,6 +448,10 @@ class PanelApp:
                 self._on_close()
             except Exception:
                 pass
+        if self._file_drop is not None:
+            self._file_drop.remove()
+        if self._draft is not None:
+            self._draft.close()
         self.root.destroy()
 
     def run(self, auto_close_sec: Optional[float] = None) -> None:

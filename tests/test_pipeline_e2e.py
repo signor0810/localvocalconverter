@@ -90,6 +90,9 @@ def _build_test_pipeline(
     """Helper to construct Pipeline with real config, glossary, and prompts."""
     cfg = load_config(overrides={"cache_dir": str(tmp_path / ".cache")})
     cfg.cache_dir = str(tmp_path / ".cache")
+    # Keep test output out of the user's real records folder.
+    cfg.storage.records_dir = str(tmp_path / "records")
+    cfg.storage.images_dir = str(tmp_path / "records" / "images")
     glossary = GlossaryManager.from_yaml(Path("config/glossary.yaml"))
 
     return Pipeline(

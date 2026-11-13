@@ -4,12 +4,14 @@ from __future__ import annotations
 import pytest
 
 from local_typeless.textblocks import (
+    ANY_MARKER_RE,
     MARKER_RE,
     append_missing_markers,
     canonicalize_markers,
     find_markers,
     join_blocks,
     marker,
+    marker_for,
     markers_preserved,
     place_markers,
     split_blocks,
@@ -271,3 +273,56 @@ def test_split_rich():
     assert split_rich("一般純文字", []) == ["一般純文字"]
     assert split_rich("   ", []) == []
     assert split_rich("", []) == []
+
+
+def test_four_markers_utilities():
+    img = CapturedImage(index=1, t_sec=1.0, path="/img.png", kind="image")
+    tab = CapturedImage(index=2, t_sec=2.0, path="/tab.md", kind="table", text="| a |\n| - |\n| 1 |")
+    lnk = CapturedImage(index=3, t_sec=3.0, path="", kind="link", text="https://example.com")
+    txt = CapturedImage(index=4, t_sec=4.0, path="", kind="text", text="一段文字")
+
+    # marker_for
+    assert marker_for(img) == "[圖1]"
+    assert marker_for(tab) == "[表2]"
+    assert marker_for(lnk) == "[連結3]"
+    assert marker_for(txt) == "[文字4]"
+
+    # ANY_MARKER_RE, find_markers, strip_markers
+    sentence = "說明 [圖1] 資料 [表2] 參考 [連結3] 補充 [文字4]"
+    assert find_markers(sentence) == ["[圖1]", "[表2]", "[連結3]", "[文字4]"]
+    assert strip_markers(sentence) == "說明  資料  參考  補充 "
+    assert markers_preserved(sentence, sentence)
+    assert not markers_preserved(sentence, "說明 [圖1]")
+
+    # canonicalize_markers variants
+    variants = "這裡有【表格1】以及［链接1］還有[連結 1]加上［文字１］與【表 02】"
+    canonical = canonicalize_markers(variants)
+    assert "[表1]" in canonical
+    assert "[連結1]" in canonical
+    assert "[文字1]" in canonical
+    assert "[表2]" in canonical
+
+    # append_missing_markers
+    missing_res = append_missing_markers(sentence, "只有說明 [圖1]")
+    assert "[表2][連結3][文字4]" in missing_res
+
+    # place_markers with mixed attachments
+    segs = [
+        Segment(start=0.5, end=1.5, text="一段話"),
+        Segment(start=2.5, end=3.5, text="二段話"),
+    ]
+    placed = place_markers(segs, [txt, img, tab, lnk])
+    assert "[圖1]" in placed
+    assert "[表2]" in placed
+    assert "[連結3]" in placed
+    assert "[文字4]" in placed
+
+    # split_rich with mixed attachments
+    rich_res = split_rich("看 [圖1] 和 [表2] 與 [連結3]", [img, tab, lnk])
+    assert rich_res == ["看 ", img, " 和 ", tab, " 與 ", lnk]
+
+    # Marker kind mismatch stays as literal text
+    mismatch_res = split_rich("看 [表1] 和 [圖2]", [img, tab])
+    assert mismatch_res == ["看 [表1] 和 [圖2]"]
+
+

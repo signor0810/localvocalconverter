@@ -559,7 +559,7 @@ def test_app_render_streaming_widget_states():
     )
     PanelApp.render(app, vm3)
     assert app.paste_image_btn.attrs["state"] == "normal"
-    assert app.paste_image_btn.attrs["text"] == "貼上圖片 (Alt+V)"
+    assert app.paste_image_btn.attrs["text"] == "貼上附件 (Alt+V)"
     assert app.cancel_btn.attrs["text"] == "取消 (Esc)"
 
     vm4 = ViewModel(
