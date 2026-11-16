@@ -14,6 +14,7 @@ from tkinter import ttk
 from local_typeless.capture.clipboard_images import Win32ClipboardBackend
 from local_typeless.output.clipboard_out import copy_with_retry
 from local_typeless.types import DraftPiece, Mode
+from local_typeless.ui import theme
 from local_typeless.ui.draft_model import DraftModel, TextBuffer
 from local_typeless.ui.file_drop import enable_file_drop
 
@@ -138,7 +139,7 @@ class DraftWindow:
         )
         self.top = tk.Toplevel(master)
         self.top.title("Local Typeless")
-        self.top.geometry("760x680")
+        self.top.geometry("820x680")
         self.top.minsize(520, 420)
 
         self._alive = True
@@ -220,6 +221,7 @@ class DraftWindow:
         if self._recording == recording:
             return
         self._recording = recording
+        theme.restyle(self.record_btn, "danger" if recording else "primary")
         if recording:
             self.refine_btn.config(state="disabled")
             self.cancel_btn.config(state="normal")
@@ -307,88 +309,96 @@ class DraftWindow:
         self.topmost_var = tk.BooleanVar(value=True)
         self.top.attributes("-topmost", True)
 
-        # 1. Top toolbar
-        toolbar = ttk.Frame(t, padding=4)
-        toolbar.pack(fill="x", side="top")
+        t.configure(bg=theme.PAGE_BG)
+        ttk.Style(t).configure("Draft.TPanedwindow", background=theme.PAGE_BG)
 
-        self.record_btn = ttk.Button(toolbar, text="● 開始錄音", command=self.actions.toggle_record)
+        def label(parent, text="", fg=theme.MUTED, bg=theme.PAGE_BG, size=10):
+            return tk.Label(parent, text=text, fg=fg, bg=bg, font=(FONT_FAMILY, size))
+
+        # 1. Top toolbar
+        toolbar = tk.Frame(t, bg=theme.PAGE_BG, padx=8, pady=8)
+        toolbar.pack(fill="x", side="top")
+        self._build_toolbar_right(toolbar)
+
+        self.record_btn = theme.button(toolbar, "● 開始錄音", self.actions.toggle_record,
+                                       kind="primary")
         self.record_btn.pack(side="left", padx=2)
 
-        self.cancel_btn = ttk.Button(
-            toolbar, text="取消", width=5, state="disabled",
-            command=lambda: self._cancel_record() if self._cancel_record else None,
+        self.cancel_btn = theme.button(
+            toolbar, "取消", lambda: self._cancel_record() if self._cancel_record else None,
+            state="disabled",
         )
         if self._cancel_record is not None:
             self.cancel_btn.pack(side="left", padx=2)
 
-        self.paste_ref_btn = ttk.Button(
-            toolbar, text="貼上參照 (Alt+V)", command=self.paste_from_clipboard
-        )
+        self.paste_ref_btn = theme.button(toolbar, "貼上參照 (Alt+V)", self.paste_from_clipboard)
         self.paste_ref_btn.pack(side="left", padx=2)
 
-        ttk.Separator(toolbar, orient="vertical").pack(side="left", fill="y", padx=6)
+        tk.Frame(toolbar, bg=theme.BORDER, width=1).pack(side="left", fill="y", padx=8, pady=2)
 
-        self.mode_var = tk.StringVar(value="整理")
-        self.mode_combo = ttk.Combobox(
+        self.mode_var = tk.StringVar(value="AI 提示")       # the mode the window opens with
+        self.mode_combo = theme.combobox(
             toolbar,
             textvariable=self.mode_var,
-            values=["整理", "摘要", "投影片"],
-            width=7,
-            state="readonly",
+            values=["整理", "AI 提示", "摘要", "投影片"],
+            width=8,
         )
         self.mode_combo.pack(side="left", padx=2)
 
-        self.refine_btn = ttk.Button(toolbar, text="重新整理 ↓", command=self._on_refine_full)
+        self.refine_btn = theme.button(toolbar, "重新整理 ↓", self._on_refine_full)
         self.refine_btn.pack(side="left", padx=2)
+        self._build_rest(label)
 
+    def _build_toolbar_right(self, toolbar: tk.Frame) -> None:
+        """Right-hand toolbar items. Packed first, so a narrow window clips the left ones last."""
         if self._menu_items:
-            more = ttk.Menubutton(toolbar, text="更多")
+            more = theme.menubutton(toolbar, "更多")
             menu = tk.Menu(more, tearoff=False)
-            for label, command in self._menu_items:
-                menu.add_command(label=label, command=command)
+            for item_label, command in self._menu_items:
+                menu.add_command(label=item_label, command=command)
             more["menu"] = menu
             more.pack(side="right", padx=2)
 
-        ttk.Checkbutton(
-            toolbar, text="置頂", variable=self.topmost_var, command=self._toggle_topmost
+        tk.Checkbutton(
+            toolbar, text="置頂", variable=self.topmost_var, command=self._toggle_topmost,
+            bg=theme.PAGE_BG, fg=theme.TEXT, activebackground=theme.PAGE_BG,
+            activeforeground=theme.TEXT, selectcolor=theme.PAGE_BG, font=(FONT_FAMILY, 10),
         ).pack(side="right", padx=4)
 
+    def _build_rest(self, label: Callable[..., tk.Label]) -> None:
+        t = self.top
+
         # 2. Status bar (very bottom)
-        status_bar = ttk.Frame(t, padding=(6, 2))
+        status_bar = tk.Frame(t, bg=theme.SIDEBAR_BG, padx=10, pady=4)
         status_bar.pack(fill="x", side="bottom")
 
-        self.status_lbl = ttk.Label(status_bar, text="就緒", foreground="#1f2937")
+        self.status_lbl = label(status_bar, "就緒", fg=theme.TEXT, bg=theme.SIDEBAR_BG, size=9)
         self.status_lbl.pack(side="left")
 
-        self.fallback_lbl = ttk.Label(status_bar, text="", foreground="#b91c1c")
+        self.fallback_lbl = label(status_bar, fg=theme.DANGER, bg=theme.SIDEBAR_BG, size=9)
         self.fallback_lbl.pack(side="left", padx=12)
 
-        self.app_lbl = ttk.Label(status_bar, text="", foreground="#4b5563")
+        self.app_lbl = label(status_bar, bg=theme.SIDEBAR_BG, size=9)
         self.app_lbl.pack(side="right")
 
         # 3. Bottom action row
-        bottom = ttk.Frame(t, padding=(6, 2))
+        bottom = tk.Frame(t, bg=theme.PAGE_BG, padx=10, pady=6)
         bottom.pack(fill="x", side="bottom")
 
-        self.finish_btn = ttk.Button(bottom, text="完成（存檔並清空）", command=self._on_finish)
+        self.finish_btn = theme.button(bottom, "完成（存檔並清空）", self._on_finish)
         self.finish_btn.pack(side="left")
 
-        self.raw_toggle_btn = ttk.Button(bottom, text="▶ 顯示逐字稿", command=self._toggle_raw)
+        self.raw_toggle_btn = theme.button(bottom, "▶ 顯示逐字稿", self._toggle_raw)
         self.raw_toggle_btn.pack(side="left", padx=8)
 
-        self.count_lbl = ttk.Label(bottom, text="0 字", foreground="#4b5563")
+        self.count_lbl = label(bottom, "0 字")
         self.count_lbl.pack(side="right")
 
         # 4. Collapsible raw transcript (hidden by default)
-        self.raw_frame = ttk.Frame(t, padding=4)
-        self.raw_box = tk.Text(
-            self.raw_frame,
-            height=4,
-            wrap="word",
-            state="disabled",
-            font=(FONT_FAMILY, 9),
-            foreground="#4b5563",
-        )
+        self.raw_frame = tk.Frame(t, bg=theme.PAGE_BG, padx=10, pady=4)
+        self.raw_box = theme.text_box(self.raw_frame, bg=theme.CARD_BG, size=9, height=4,
+                                      wrap="word", state="disabled")
+        self.raw_box.configure(fg=theme.MUTED)
         raw_scroll = ttk.Scrollbar(self.raw_frame, orient="vertical", command=self.raw_box.yview)
         self.raw_box.configure(yscrollcommand=raw_scroll.set)
         self.raw_box.pack(side="left", fill="both", expand=True)
@@ -396,34 +406,37 @@ class DraftWindow:
         self._bottom_row = bottom
 
         # 5. Draft (top) and result (bottom), resizable against each other
-        panes = ttk.PanedWindow(t, orient="vertical")
+        panes = ttk.PanedWindow(t, orient="vertical", style="Draft.TPanedwindow")
         panes.pack(fill="both", expand=True, side="top")
 
-        draft_frame = ttk.Frame(panes, padding=4)
-        draft_head = ttk.Frame(draft_frame)
-        draft_head.pack(fill="x")
-        ttk.Label(draft_head, text="草稿（可直接修改；講的話和貼上的參照都進到這裡）").pack(side="left")
-        self.copy_all_btn = ttk.Button(draft_head, text="複製草稿", command=self._on_copy_all)
+        draft_frame = tk.Frame(panes, bg=theme.PAGE_BG, padx=10, pady=4)
+        draft_head = tk.Frame(draft_frame, bg=theme.PAGE_BG)
+        draft_head.pack(fill="x", pady=(0, 4))
+        label(draft_head, "草稿", fg=theme.ACCENT, size=12).pack(side="left")
+        label(draft_head, "可直接修改；講的話和貼上的參照都進到這裡", size=9).pack(
+            side="left", padx=8)
+        self.copy_all_btn = theme.button(draft_head, "複製草稿", self._on_copy_all)
         self.copy_all_btn.pack(side="right")
-        self.text = tk.Text(draft_frame, undo=True, wrap="word", font=(FONT_FAMILY, 11), height=10)
+        self.text = theme.text_box(draft_frame, undo=True, wrap="word", height=10)
         text_scroll = ttk.Scrollbar(draft_frame, orient="vertical", command=self.text.yview)
         self.text.configure(yscrollcommand=text_scroll.set)
         text_scroll.pack(side="right", fill="y")
         self.text.pack(side="left", fill="both", expand=True)
         panes.add(draft_frame, weight=3)
 
-        result_frame = ttk.Frame(panes, padding=4)
-        result_head = ttk.Frame(result_frame)
-        result_head.pack(fill="x")
-        self.result_title = ttk.Label(result_head, text="整理結果（按「重新整理」後出現）")
+        result_frame = tk.Frame(panes, bg=theme.PAGE_BG, padx=10, pady=4)
+        result_head = tk.Frame(result_frame, bg=theme.PAGE_BG)
+        result_head.pack(fill="x", pady=(0, 4))
+        self.result_title = label(result_head, "整理結果（按「重新整理」後出現）",
+                                  fg=theme.ACCENT, size=12)
         self.result_title.pack(side="left")
-        self.paste_back_btn = ttk.Button(
-            result_head, text="貼回上一個視窗", command=self._on_paste_back
-        )
+        self.paste_back_btn = theme.button(result_head, "貼回上一個視窗", self._on_paste_back,
+                                           kind="primary")
         self.paste_back_btn.pack(side="right")
-        self.copy_result_btn = ttk.Button(result_head, text="複製結果", command=self._on_copy_result)
+        self.copy_result_btn = theme.button(result_head, "複製結果", self._on_copy_result)
         self.copy_result_btn.pack(side="right", padx=4)
-        self.result = tk.Text(result_frame, undo=True, wrap="word", font=(FONT_FAMILY, 11), height=7)
+        self.result = theme.text_box(result_frame, bg=theme.CARD_BG, undo=True, wrap="word",
+                                     height=7)
         result_scroll = ttk.Scrollbar(result_frame, orient="vertical", command=self.result.yview)
         self.result.configure(yscrollcommand=result_scroll.set)
         result_scroll.pack(side="right", fill="y")
@@ -502,7 +515,8 @@ class DraftWindow:
             return
 
         mode_label = self.mode_var.get()
-        mode_map = {"整理": Mode.CLEAN, "摘要": Mode.SUMMARY, "投影片": Mode.SLIDE}
+        mode_map = {"整理": Mode.CLEAN, "AI 提示": Mode.PROMPT, "摘要": Mode.SUMMARY,
+                    "投影片": Mode.SLIDE}
         mode = mode_map.get(mode_label, Mode.CLEAN)
 
         protected, mapping = self.model.protect()

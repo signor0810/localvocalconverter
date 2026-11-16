@@ -115,6 +115,7 @@ class PanelApp:
         teach_factory: Optional[Callable[[], Any]] = None,
         review_factory: Optional[Callable[[], Any]] = None,
         draft_bridge: Any = None,
+        info_factory: Optional[Callable[[], Any]] = None,
     ) -> None:
         enable_dpi_awareness()
         self.ctl = controller
@@ -123,6 +124,8 @@ class PanelApp:
         self._teach_win: Any = None
         self._review_factory = review_factory    # -> ReviewController; None disables review mode
         self._review_win: Any = None
+        self._info_factory = info_factory        # -> InfoController; None hides the info panel
+        self._info_win: Any = None
         self._draft = draft_bridge               # DraftBridge; None = classic paste-when-done flow
         self.root = tk.Tk()
         self.root.title("Local Typeless")
@@ -146,6 +149,8 @@ class PanelApp:
             # Single-window mode: the draft editor is the app; the side panel stays hidden
             # and only keeps driving the controller.
             items = []
+            if self._info_factory is not None:
+                items.append(("Home／History／System prompt…", self.open_info))
             if self._review_factory is not None:
                 items.append(("檢查口述紀錄…", self.open_review))
             if self._teach_factory is not None:
@@ -243,7 +248,8 @@ class PanelApp:
 
     # ------------------------------------------------- hidden teach mode & review
     def _bind_teach(self) -> None:
-        if self._teach_factory is None and self._review_factory is None and self._draft is None:
+        if (self._teach_factory is None and self._review_factory is None
+                and self._info_factory is None and self._draft is None):
             return
         if self._teach_factory is not None:
             for seq in ("<Control-Shift-T>", "<Control-Shift-t>"):
@@ -251,6 +257,8 @@ class PanelApp:
         menu = tk.Menu(self.root, tearoff=0)
         if self._draft is not None:
             menu.add_command(label="草稿視窗", command=self._draft.show)
+        if self._info_factory is not None:
+            menu.add_command(label="Home／History／System prompt…", command=self.open_info)
         if self._teach_factory is not None:
             menu.add_command(label="教學模式…", command=self.open_teach)
         if self._review_factory is not None:
@@ -280,6 +288,23 @@ class PanelApp:
 
         self._teach_win = TeachWindow(self.root, self._teach_factory(), self._selection)
         self._teach_win.lift()
+
+    def _draft_mode(self) -> Any:
+        """Mode currently chosen in the draft window, for the System prompt page."""
+        win = getattr(self._draft, "window", None)
+        label = win.mode_var.get() if win is not None else ""
+        return next((mode for lbl, mode in MODE_CHOICES if lbl == label), None)
+
+    def open_info(self) -> None:
+        if self._info_factory is None:
+            return
+        if self._info_win is not None and self._info_win._alive:
+            self._info_win.lift()
+            return
+        from local_typeless.ui.info_window import InfoWindow
+
+        self._info_win = InfoWindow(self.root, self._info_factory(), self._draft_mode)
+        self._info_win.lift()
 
     def open_review(self) -> None:
         if self._review_factory is None:

@@ -4,6 +4,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
 from typing import List, Optional
 
@@ -19,6 +20,8 @@ class Record:
     raw_text: str
     result_text: str
     mode: str = ""
+    when: Optional[datetime] = None     # front-matter `time:`; None when missing or unreadable
+    fallback: bool = False              # the LLM was not used for this record
 
 
 def parse_record_file(path: Path) -> Optional[Record]:
@@ -41,13 +44,24 @@ def parse_record_file(path: Path) -> Optional[Record]:
     raw_text = text[raw_idx + len(raw_marker):].strip()
 
     mode = ""
+    when: Optional[datetime] = None
+    fallback = False
     if text.startswith("---"):
         end_fm = text.find("\n---", 3)
         if end_fm != -1:
             fm_text = text[3:end_fm]
             for line in fm_text.splitlines():
-                if line.strip().startswith("mode:"):
-                    mode = line.split(":", 1)[1].strip()
+                key, _, value = line.strip().partition(":")
+                value = value.strip()
+                if key == "mode":
+                    mode = value
+                elif key == "fallback":
+                    fallback = value.lower() == "true"
+                elif key == "time":
+                    try:
+                        when = datetime.fromisoformat(value)
+                    except ValueError:
+                        when = None
 
     try:
         mtime = path.stat().st_mtime
@@ -60,6 +74,8 @@ def parse_record_file(path: Path) -> Optional[Record]:
         raw_text=raw_text,
         result_text=result_text,
         mode=mode,
+        when=when,
+        fallback=fallback,
     )
 
 

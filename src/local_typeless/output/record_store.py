@@ -18,6 +18,7 @@ _MODE_NAMES = {
     Mode.SUMMARY: "摘要",
     Mode.SLIDE: "投影片",
     Mode.TRANSFORM: "轉換",
+    Mode.PROMPT: "提示",
 }
 
 _ILLEGAL_FILENAME_CHARS = set(r'\/:*?"<>|')

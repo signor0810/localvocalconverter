@@ -49,7 +49,7 @@ def test_compose_insert_ends_with_blank_line():
 
 def test_default_mode_is_clean_and_choices():
     assert MODE_CHOICES[0] == ("整理", Mode.CLEAN)
-    assert [m for _, m in MODE_CHOICES] == [Mode.CLEAN, Mode.SUMMARY, Mode.SLIDE]
+    assert [m for _, m in MODE_CHOICES] == [Mode.CLEAN, Mode.PROMPT, Mode.SUMMARY, Mode.SLIDE]
     c, *_ = make()
     assert c.vm.mode is Mode.CLEAN and c.vm.auto_paste and not c.vm.include_raw
     assert c.vm.result_mode is Mode.CLEAN

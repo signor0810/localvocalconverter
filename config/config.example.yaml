@@ -134,6 +134,10 @@ refine:
   block_target_chars: 700  # clean mode: target character length per refinement block
   block_max_chars: 1000  # clean mode: hard maximum character length per refinement block
   context_chars: 150  # tail character count of the previous block provided as context
+  guard: true  # reject LLM output that adds English terms/numbers, drops them, or answers instead of cleaning
+  # Standalone fillers removed by the rule-based cleanup (the text you get when the LLM is
+  # unreachable or its output is rejected). Uncomment to replace the built-in list.
+  # fillers: ["嗯", "呃", "痾", "um", "uh", "uhm", "umm", "uhh", "er", "erm", "hmm"]
 
 storage:
   # Everything this tool accumulates lives under records/ by default. To move it all,

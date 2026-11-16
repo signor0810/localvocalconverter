@@ -164,6 +164,8 @@ class _PydanticRefine(BaseModel):
     block_target_chars: int = Field(default=700, gt=0)
     block_max_chars: int = Field(default=1000, gt=0)
     context_chars: int = Field(default=150, ge=0)
+    guard: bool = True
+    fillers: Optional[List[str]] = None
 
     @model_validator(mode="after")
     def _validate_block_bounds(self) -> _PydanticRefine:
@@ -317,6 +319,8 @@ def _convert_to_dataclass(validated: _PydanticAppConfig, project_root: Path) -> 
         block_target_chars=validated.refine.block_target_chars,
         block_max_chars=validated.refine.block_max_chars,
         context_chars=validated.refine.context_chars,
+        guard=validated.refine.guard,
+        **({} if validated.refine.fillers is None else {"fillers": list(validated.refine.fillers)}),
     )
 
     resolved_records = _resolve_project_path(validated.storage.records_dir, project_root) or "records"

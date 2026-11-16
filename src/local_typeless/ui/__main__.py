@@ -224,12 +224,18 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         return ReviewController(cfg, lambda: create_llm_client(cfg.llm))
 
+    def info_factory():
+        from local_typeless.ui.info_controller import InfoController
+
+        return InfoController(cfg, pipeline.glossary.build_llm_glossary_section)
+
     app = PanelApp(
         controller,
         on_close=on_close,
         teach_factory=teach_factory,
         review_factory=review_factory,
         draft_bridge=draft_bridge,
+        info_factory=info_factory,
     )
     try:
         app.run(auto_close_sec=args.auto_close)

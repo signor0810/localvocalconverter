@@ -50,11 +50,16 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Protocol, runtime_checkable
 
 
+# Standalone fillers the rule-based cleanup removes (refine.fillers overrides this list).
+DEFAULT_FILLERS: List[str] = ["嗯", "呃", "痾", "um", "uh", "uhm", "umm", "uhh", "er", "erm", "hmm"]
+
+
 class Mode(str, Enum):
     CLEAN = "clean"
     SLIDE = "slide"
     TRANSFORM = "transform"
     SUMMARY = "summary"                 # condensed summary of the dictation (UI default)
+    PROMPT = "prompt"                   # restate the dictation as a prompt for an AI assistant
 
 
 @dataclass
@@ -166,6 +171,8 @@ class RefineConfig:
     block_target_chars: int = 700       # clean mode: aim for blocks of about this size
     block_max_chars: int = 1000         # clean mode: never send a larger block to the LLM
     context_chars: int = 150            # tail of the previous raw block shown as context
+    guard: bool = True                  # reject LLM output that adds terms/numbers or answers
+    fillers: List[str] = field(default_factory=lambda: list(DEFAULT_FILLERS))  # removed by rules
 
 
 @dataclass

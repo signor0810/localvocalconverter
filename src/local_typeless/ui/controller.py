@@ -23,12 +23,14 @@ logger = logging.getLogger(__name__)
 HISTORY_MAX = 10
 
 # (label shown in the dropdown, Mode); first entry is the default.
-MODE_CHOICES = [("整理", Mode.CLEAN), ("摘要", Mode.SUMMARY), ("投影片", Mode.SLIDE)]
+MODE_CHOICES = [("整理", Mode.CLEAN), ("AI 提示", Mode.PROMPT), ("摘要", Mode.SUMMARY),
+                ("投影片", Mode.SLIDE)]
 RESULT_LABELS = {
     Mode.SUMMARY: "摘要結果",
     Mode.CLEAN: "整理結果",
     Mode.SLIDE: "投影片結果",
     Mode.TRANSFORM: "轉換結果",
+    Mode.PROMPT: "AI 提示結果",
 }
 FALLBACK_NOTICE = "LLM 未連線，顯示原文"
 

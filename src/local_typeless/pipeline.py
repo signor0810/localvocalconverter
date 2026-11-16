@@ -40,6 +40,7 @@ logger = logging.getLogger(__name__)
 IMAGE_MANIFEST = "last_recording.images.json"
 NO_SPEECH = "no speech detected"
 OUTPUTS_FAILED = "all outputs failed"
+GUARD_REJECTED = "防呆未通過"
 
 
 def save_image_manifest(cache_dir: Path, images: Sequence[CapturedImage]) -> None:
@@ -273,6 +274,37 @@ class Pipeline:
             logger.warning("normalize_terms failed (%s: %s); emitting bare text", type(e).__name__, e)
             return text
 
+    def _fallback_text(self, raw: str) -> str:
+        """What the user gets when the LLM result cannot be used: rule-cleaned, normalized."""
+        try:
+            from local_typeless.cleanup import rules_clean
+
+            fillers = getattr(getattr(self.config, "refine", None), "fillers", None)
+            cleaned = rules_clean(raw, fillers) if fillers is not None else rules_clean(raw)
+        except Exception as e:  # the fallback must never fail
+            logger.warning("rule cleanup failed (%s: %s); using raw text", type(e).__name__, e)
+            cleaned = raw
+        return self._normalize_safe(cleaned or raw)
+
+    def _glossary_section_safe(self) -> str:
+        try:
+            return self.glossary.build_llm_glossary_section()
+        except Exception:
+            return ""
+
+    def _guard(self, raw: str, out: str, mode: Mode) -> None:
+        """Raise LLMResponseError when `out` is not a faithful rewrite of `raw`."""
+        if not getattr(getattr(self.config, "refine", None), "guard", False):
+            return
+        from local_typeless.cleanup import guard as _guard_mod
+
+        reason = _guard_mod.check(
+            self._normalize_safe(raw), out, mode.value,
+            allowed_terms=_guard_mod.glossary_terms(self._glossary_section_safe()),
+        )
+        if reason:
+            raise LLMResponseError(f"{GUARD_REJECTED}：{reason}")
+
     def _finish(self, result: PipelineResult, record_history: bool) -> PipelineResult:
         """Record history, emit to every output, and note when all outputs failed."""
         if record_history:
@@ -356,7 +388,7 @@ class Pipeline:
                     raw_text, cfg.refine.block_target_chars, cfg.refine.block_max_chars
                 )
                 total_blocks = max(1, len(blocks))
-                final_text = self._normalize_safe(raw_text)
+                final_text = self._fallback_text(raw_text)
                 llm_elapsed = time.perf_counter() - t0
                 return PipelineResult(
                     raw_text=raw_text,
@@ -382,7 +414,7 @@ class Pipeline:
 
             for i, block in enumerate(blocks):
                 if connection_failed:
-                    parts.append(self._normalize_safe(block))
+                    parts.append(self._fallback_text(block))
                     fallback_blocks += 1
                     continue
 
@@ -409,6 +441,7 @@ class Pipeline:
                         raise LLMResponseError("LLM reply is empty or degenerate")
                     if not markers_preserved(block, out):
                         raise LLMResponseError("image markers changed by LLM")
+                    self._guard(block, out, mode)
                     parts.append(out)
                 except Exception as e:
                     logger.warning(
@@ -426,7 +459,7 @@ class Pipeline:
                         first_error = (
                             msg if total_blocks == 1 else f"block {i + 1}/{total_blocks}: {msg}"
                         )
-                    parts.append(self._normalize_safe(block))
+                    parts.append(self._fallback_text(block))
 
             final_text = join_blocks(parts)
             fallback_triggered = fallback_blocks > 0
@@ -451,6 +484,7 @@ class Pipeline:
                 final_text = self.glossary.normalize_terms(appended)
                 if is_degenerate(final_text):
                     raise LLMResponseError("LLM reply is empty or degenerate")
+                self._guard(raw_text, final_text, mode)
             except Exception as e:
                 logger.warning(
                     "LLM stage failed (%s: %s); emitting normalized raw transcript",
@@ -460,7 +494,7 @@ class Pipeline:
                 fallback_triggered = True
                 fallback_blocks = 1
                 error_message = str(e) if isinstance(e, LLMError) else f"{type(e).__name__}: {e}"
-                final_text = self._normalize_safe(raw_text)
+                final_text = self._fallback_text(raw_text)
 
         llm_elapsed = time.perf_counter() - t0
         return PipelineResult(
@@ -515,6 +549,7 @@ class Pipeline:
                 raise LLMResponseError("LLM reply is empty or degenerate")
             if not markers_preserved(raw, out):
                 raise LLMResponseError("image markers changed by LLM")
+            self._guard(raw, out, Mode.CLEAN)
             return (out, False)
         except Exception as e:
             logger.warning(
@@ -522,7 +557,7 @@ class Pipeline:
                 type(e).__name__,
                 e,
             )
-            return (self._normalize_safe(raw), True)
+            return (self._fallback_text(raw), True)
 
     def refine_only(self, text: str, mode: Mode) -> PipelineResult:
         """Refine a whole text without emitting, history or record file."""
