@@ -184,17 +184,21 @@ class DraftBridge:
             self.window = None
 
     # ------------------------------------------------------------- actions
-    def refine(self, text: str, mode: Mode, done: Callable[[Optional[str], str], None]) -> None:
+    def refine(self, text: str, mode: Mode, done: Callable[..., None]) -> None:
+        """`done(text or None, error, doubts)`: the result is shown for review, so what
+        the guard doubts comes back as a note next to it instead of being thrown away."""
         def work() -> None:
+            warn = ""
             try:
-                res = self._pipeline.refine_only(text, mode)
+                res = self._pipeline.refine_only(text, mode, guard_warns=True)
                 if res.fallback_triggered:
                     out, err = None, (res.error_message or "LLM 沒有回應")
                 else:
                     out, err = res.final_text, ""
+                    warn = "；".join(res.guard_warnings)
             except Exception as e:
                 out, err = None, f"{type(e).__name__}: {e}"
-            self._on_tk(lambda: done(out, err))
+            self._on_tk(lambda: done(out, err, warn))
 
         self._run_async(work)
 

@@ -56,10 +56,18 @@ _UNIT_SYMBOLS = {
 # mode -> (max growth, slack, min kept share, raw size from which the minimum applies)
 _LENGTH_LIMITS = {
     "clean": (1.15, 6, 0.5, 20),
-    "prompt": (1.3, 15, 0.25, 40),
+    "prompt": (1.6, 30, 0.25, 40),      # a lead-in line and list wording add length
 }
 # mode -> (unexplained dropped terms always tolerated, plus this share of the raw terms)
 _DROP_LIMITS = {"clean": (1, 0.10), "prompt": (1, 0.25)}
+# mode -> English words not heard in the raw text that the output may still contain
+_ADDED_LIMITS = {"prompt": 1}
+# words a rewritten request may use to name its reader
+_MODE_WORDS = {"prompt": {"ai", "llm", "prompt"}}
+# "2千" / "3 萬" / "5k": a digit with a spoken multiplier
+_MIXED_NUMBER = re.compile(r"(\d+(?:\.\d+)?)\s*([十百千萬億kKmM])")
+_MULTIPLIERS = {"十": 10, "百": 100, "千": 1000, "萬": 10_000, "億": 100_000_000,
+                "k": 1000, "m": 1_000_000}
 
 
 def _strip(text: str) -> str:
@@ -115,6 +123,9 @@ def _spoken_numbers(raw: str) -> Tuple[Set[str], str]:
     for m in _NUMBER.finditer(raw):
         values.add(_norm_number(m.group(0)))
         digit_stream.append(m.group(0).replace(".", ""))
+    for m in _MIXED_NUMBER.finditer(raw):
+        product = float(m.group(1)) * _MULTIPLIERS[m.group(2).lower()]
+        values.add(_norm_number(f"{product:.4f}"))
     for m in _CN_RUN.finditer(raw):
         parts = [p for p in m.group(0).split("點") if p]
         digitwise_parts = []
@@ -166,7 +177,7 @@ def check(raw: str, out: str, mode: str = "clean", allowed_terms: Iterable[str] 
     if mode == "prompt" and "```" in out:
         return "LLM 輸出了程式碼區塊（像是在回答而不是整理）"
 
-    allowed = {t.lower() for t in allowed_terms}
+    allowed = {t.lower() for t in allowed_terms} | _MODE_WORDS.get(mode, set())
     for spoken, symbols in _UNIT_SYMBOLS.items():
         if spoken in raw_s:
             allowed.update(symbols)
@@ -178,7 +189,7 @@ def check(raw: str, out: str, mode: str = "clean", allowed_terms: Iterable[str] 
     out_squashed = _squash(out_body)
 
     added = sorted({t for t in out_words if not _explained(t, raw_squashed, raw_words, allowed)})
-    if added:
+    if len(added) > _ADDED_LIMITS.get(mode, 0):
         return "多出原文沒有的英文詞：" + "、".join(added[:5])
 
     values, digit_stream = _spoken_numbers(raw_s)

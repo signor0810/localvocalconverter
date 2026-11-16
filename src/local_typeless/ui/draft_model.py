@@ -557,23 +557,7 @@ class DraftModel:
         """Write current draft state to <cache_dir>/draft.json."""
         try:
             self._cache_dir.mkdir(parents=True, exist_ok=True)
-            data = {
-                "text": self.buffer.get_text(),
-                "embed_ranges": self.buffer.get_tag_ranges("embed"),
-                "raw_pieces": [
-                    {
-                        "job_id": p.job_id,
-                        "seq": p.seq,
-                        "start_sec": p.start_sec,
-                        "end_sec": p.end_sec,
-                        "raw_text": p.raw_text,
-                        "text": p.text,
-                        "fallback": p.fallback,
-                    }
-                    for p in self._raw_pieces
-                ],
-                "fallback_count": self.fallback_count,
-            }
+            data = self.state()
             tmp_file = self._cache_dir / f"draft.tmp.{os.getpid()}"
             tmp_file.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
             target_file = self._cache_dir / "draft.json"
@@ -587,25 +571,51 @@ class DraftModel:
         if not save_file.exists():
             return
         try:
-            data = json.loads(save_file.read_text(encoding="utf-8"))
-            text = data.get("text", "")
-            self.buffer.set_text(text)
-            self.buffer.clear_tag("embed")
-            for s, e in data.get("embed_ranges", []):
-                if e <= len(text):
-                    self.buffer.add_tag("embed", s, e)
-            self._raw_pieces = [
-                DraftPiece(
-                    job_id=p["job_id"],
-                    seq=p["seq"],
-                    start_sec=p["start_sec"],
-                    end_sec=p["end_sec"],
-                    raw_text=p["raw_text"],
-                    text=p["text"],
-                    fallback=p.get("fallback", False),
-                )
-                for p in data.get("raw_pieces", [])
-            ]
-            self.fallback_count = data.get("fallback_count", 0)
+            self.set_state(json.loads(save_file.read_text(encoding="utf-8")))
         except Exception as exc:
             logger.warning("Failed to load draft autosave: %s", exc)
+
+    def state(self) -> Dict[str, Any]:
+        """Everything that makes up this draft, as plain JSON data."""
+        return {
+            "text": self.buffer.get_text(),
+            "embed_ranges": [list(r) for r in self.buffer.get_tag_ranges("embed")],
+            "raw_pieces": [
+                {
+                    "job_id": p.job_id,
+                    "seq": p.seq,
+                    "start_sec": p.start_sec,
+                    "end_sec": p.end_sec,
+                    "raw_text": p.raw_text,
+                    "text": p.text,
+                    "fallback": p.fallback,
+                }
+                for p in self._raw_pieces
+            ],
+            "fallback_count": self.fallback_count,
+        }
+
+    def set_state(self, data: Dict[str, Any]) -> None:
+        """Replace the draft with a saved one ({} = an empty draft)."""
+        pieces = [
+            DraftPiece(
+                job_id=p["job_id"],
+                seq=p["seq"],
+                start_sec=p["start_sec"],
+                end_sec=p["end_sec"],
+                raw_text=p["raw_text"],
+                text=p["text"],
+                fallback=p.get("fallback", False),
+            )
+            for p in data.get("raw_pieces", [])
+        ]
+        text = data.get("text", "")
+        self.buffer.set_text(text)
+        self.buffer.clear_tag("embed")
+        for s, e in data.get("embed_ranges", []):
+            if e <= len(text):
+                self.buffer.add_tag("embed", s, e)
+        self._raw_pieces = pieces
+        self.fallback_count = data.get("fallback_count", 0)
+        self._timeline.clear()
+        self._undo_stack.clear()

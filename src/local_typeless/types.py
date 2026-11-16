@@ -291,6 +291,7 @@ class PipelineResult:
     images: List[CapturedImage] = field(default_factory=list)
     total_blocks: int = 1               # clean mode sends long text to the LLM in blocks
     fallback_blocks: int = 0            # blocks emitted as normalized raw text (0 < n < total = partial)
+    guard_warnings: List[str] = field(default_factory=list)   # doubts about a result that was kept
 
 
 # ---------------------------------------------------------------- errors

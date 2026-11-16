@@ -483,3 +483,118 @@ def test_draft_window_lifecycle(tmp_path: Path, fake_clock: FakeClock):
     finally:
         root.destroy()
 
+
+
+def test_draft_window_line_numbers_and_selected_reference(tmp_path: Path, fake_clock: FakeClock):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        pytest.skip("Tkinter display not available")
+
+    try:
+        from local_typeless.ui.draft_window import DraftActions, DraftWindow
+
+        actions = DraftActions(toggle_record=lambda: None, refine=lambda text, mode, done: done("", ""),
+                               save_draft=lambda final, raw: None, paste_to_previous=lambda text: True)
+        win = DraftWindow(
+            root,
+            lambda buf: DraftModel(buf, images_dir=tmp_path / "images", cache_dir=tmp_path / "cache",
+                                   clock=fake_clock, autosave=False),
+            actions=actions,
+            clipboard_backend=FakeClipboardBackend(text="SRAF placement"),
+        )
+        long_line = "OPC 跟 ILT 的差異，" * 30            # wraps over several rows, still one number
+        win.text.insert("1.0", f"第一行\n{long_line}\n第三行")
+        root.update()
+        win._draw_line_numbers()
+
+        rows = win.visible_line_numbers()
+        assert [n for n, _y in rows] == [1, 2, 3]
+        row_height = rows[1][1] - rows[0][1]
+        assert rows[2][1] - rows[1][1] > row_height      # line 3 sits below the wrapped rows
+        assert len(win.line_gutter.find_all()) == 3
+
+        # a selected reference must show the selection, not its own background
+        names = win.text.tag_names()
+        assert names.index("sel") > names.index("embed")
+
+        # 清空 empties the draft; while it is empty the same button brings it back
+        before = win.model.buffer.get_text()
+        win.model.buffer.add_tag("embed", 0, 3)
+        win._on_clear()
+        assert win.model.buffer.get_text() == "" and win.clear_btn.cget("text") == "復原清空"
+        win._on_clear()
+        assert win.model.buffer.get_text() == before and win.clear_btn.cget("text") == "清空"
+        assert win.model.buffer.get_tag_ranges("embed") == [(0, 3)]
+        win.close()
+    finally:
+        root.destroy()
+
+
+def test_draft_tabs_and_guard_doubts(tmp_path: Path, fake_clock: FakeClock):
+    import tkinter as tk
+    try:
+        root = tk.Tk()
+        root.withdraw()
+    except Exception:
+        pytest.skip("Tkinter display not available")
+
+    try:
+        from local_typeless.ui.draft_window import DraftActions, DraftWindow
+
+        saved = []
+        actions = DraftActions(
+            toggle_record=lambda: None,
+            refine=lambda text, mode, done: done("整理後 " + text, "", "多出原文沒有的數字：2000"),
+            save_draft=lambda final, raw: saved.append((final, raw)),
+            paste_to_previous=lambda text: True)
+
+        def open_window():
+            return DraftWindow(
+                root,
+                lambda buf: DraftModel(buf, images_dir=tmp_path / "images",
+                                       cache_dir=tmp_path / "cache", clock=fake_clock),
+                actions=actions, clipboard_backend=FakeClipboardBackend(text="x"))
+
+        win = open_window()
+        assert win.tab_names() == ["草稿1"]
+        win.text.insert("1.0", "第一份 ILT")
+        win.model.buffer.add_tag("embed", 4, 7)
+        # the guard's doubt does not throw the result away: it is shown with a note
+        win._on_refine_full()
+        assert win.result_text().startswith("整理後") and "2000" in win.result_title.cget("text")
+
+        assert win.new_tab() and win.tab_names() == ["草稿1", "草稿2"]
+        assert win.model.buffer.get_text() == "" and win.result_text() == ""
+        assert "⚠" not in win.result_title.cget("text")
+        win.text.insert("1.0", "第二份 OPC")
+        root.update()
+
+        win.set_recording(True)                      # no switching in the middle of a recording
+        assert not win.switch_tab(0)
+        win.set_recording(False)
+
+        assert win.switch_tab(0)
+        assert win.model.buffer.get_text() == "第一份 ILT"
+        assert win.model.buffer.get_tag_ranges("embed") == [(4, 7)]
+        assert win.result_text().startswith("整理後") and "⚠" in win.result_title.cget("text")
+
+        assert win.save_tab(1) and saved[-1][0] == "第二份 OPC"      # 儲存: a record, tab stays
+        assert win.tab_names() == ["草稿1", "草稿2"] and win.model.buffer.get_text() == "第二份 OPC"
+        root.update()
+        win.close()
+
+        win = open_window()                          # everything is back after a restart
+        assert win.tab_names() == ["草稿1", "草稿2"] and win.model.buffer.get_text() == "第二份 OPC"
+        assert win.switch_tab(0) and win.model.buffer.get_text() == "第一份 ILT"
+        assert win.result_text().startswith("整理後")
+
+        assert win.delete_tab(0, confirm=False)
+        assert win.tab_names() == ["草稿2"] and win.model.buffer.get_text() == "第二份 OPC"
+        assert win.delete_tab(0, confirm=False)      # the last one is emptied, not removed
+        assert win.tab_names() == ["草稿1"] and win.model.buffer.get_text() == ""
+        win.close()
+    finally:
+        root.destroy()

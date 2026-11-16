@@ -16,4 +16,4 @@ def _guard_off_unless_marked(request, monkeypatch):
     if request.node.get_closest_marker("guard") is None:
         from local_typeless.pipeline import Pipeline
 
-        monkeypatch.setattr(Pipeline, "_guard", lambda self, raw, out, mode: None)
+        monkeypatch.setattr(Pipeline, "_guard", lambda self, raw, out, mode, warnings=None: None)

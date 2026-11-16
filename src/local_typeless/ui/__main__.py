@@ -227,7 +227,16 @@ def main(argv: Optional[List[str]] = None) -> int:
     def info_factory():
         from local_typeless.ui.info_controller import InfoController
 
-        return InfoController(cfg, pipeline.glossary.build_llm_glossary_section)
+        def reload_glossary() -> None:      # the Dictionary page changed the user file
+            from local_typeless.glossary.manager import GlossaryManager
+
+            pipeline.glossary = GlossaryManager.from_yaml(Path(cfg.glossary_path))
+
+        from local_typeless.config.loader import resolve_config_path, settings_path
+
+        return InfoController(cfg, lambda: pipeline.glossary.build_llm_glossary_section(),
+                              on_glossary_changed=reload_glossary,
+                              settings_file=settings_path(resolve_config_path(args.config)))
 
     app = PanelApp(
         controller,

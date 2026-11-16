@@ -771,3 +771,18 @@ def test_llm_gateway_fields_defaults_values_and_validation(tmp_path):
     for bad in ({"api_key_header": " "}, {"chat_path": ""}):
         with _pytest.raises(ValueError):
             _load(write(bad))
+
+
+def test_whisper_prompt_carries_user_terms_within_the_limit(tmp_path):
+    from local_typeless.glossary.manager import WHISPER_PROMPT_MAX_CHARS, GlossaryManager
+
+    base = tmp_path / "glossary.yaml"
+    base.write_text("canonical_terms:\n  - term: OPC\n", encoding="utf-8")
+    assert "也會提到" not in GlossaryManager.from_yaml(base).build_whisper_initial_prompt()
+
+    terms = ["SRAF", "curvilinear mask", "OPC"] + [f"process window {i}" for i in range(40)]
+    (tmp_path / "glossary.user.yaml").write_text(
+        "canonical_terms:\n" + "".join(f"  - term: {t}\n" for t in terms), encoding="utf-8")
+    prompt = GlossaryManager.from_yaml(base).build_whisper_initial_prompt()
+    assert "也會提到SRAF、curvilinear mask、process window 0" in prompt      # OPC is already there
+    assert len(prompt) <= WHISPER_PROMPT_MAX_CHARS and prompt.endswith("。")

@@ -7,17 +7,21 @@ ui.info_controller.InfoController; a page is rebuilt from the files each time it
 from __future__ import annotations
 
 import os
+import re
 import tkinter as tk
 from datetime import date, timedelta
 from pathlib import Path
 from tkinter import ttk
-from typing import Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from local_typeless.types import Mode
 from local_typeless.ui import theme
 from local_typeless.ui.info_controller import (
+    LANGUAGE_CHOICES,
     MODE_LABELS,
     PROMPT_MODES,
+    DictEntry,
+    DictionaryView,
     HistoryEntry,
     HomeStats,
     InfoController,
@@ -30,7 +34,9 @@ WEEKDAYS = "一二三四五六日"
 PAGES: Tuple[Tuple[str, str], ...] = (
     ("home", "Home"),
     ("history", "History"),
+    ("dictionary", "Dictionary"),
     ("prompt", "System prompt"),
+    ("settings", "System setting"),
 )
 
 
@@ -86,6 +92,10 @@ class InfoWindow:
         self._prompt_edits: Dict[Mode, str] = {}  # edits not loaded yet, kept while browsing
         self._prompt_box: Optional[tk.Text] = None
         self._prompt_preview = False
+        self._dict_filter_text = ""
+        self._dict_selected_term: Optional[str] = None
+        self._dict_tree: Optional[ttk.Treeview] = None
+        self._dict_entries: List[DictEntry] = []
         self._build()
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.show("home")
@@ -131,7 +141,14 @@ class InfoWindow:
         for child in self.body.winfo_children():
             child.destroy()
         self._prompt_box = None
-        {"home": self._home_page, "history": self._history_page, "prompt": self._prompt_page}[page]()
+        self._dict_tree = None
+        {
+            "home": self._home_page,
+            "history": self._history_page,
+            "dictionary": self._dictionary_page,
+            "prompt": self._prompt_page,
+            "settings": self._settings_page,
+        }[page]()
 
     # ----------------------------------------------------------- helpers
     def _title(self, text: str) -> tk.Frame:
@@ -316,6 +333,298 @@ class InfoWindow:
             text.insert("end", entry.text.strip() + "\n", "body")
         text.configure(state="disabled")
 
+    # -------------------------------------------------------- dictionary
+    def _populate_dictionary_tree(self) -> None:
+        if not hasattr(self, "_dict_tree") or self._dict_tree is None:
+            return
+        self._dict_tree.delete(*self._dict_tree.get_children())
+        query = getattr(self, "_dict_filter_text", "").strip().lower()
+        entries = getattr(self, "_dict_entries", [])
+        for e in entries:
+            aliases_str = ", ".join(e.aliases)
+            source_str = "內建" if e.builtin else "自訂"
+            if query:
+                matched = (
+                    query in e.term.lower()
+                    or query in e.definition.lower()
+                    or query in aliases_str.lower()
+                )
+                if not matched:
+                    continue
+            item_id = self._dict_tree.insert(
+                "", "end",
+                values=(e.term, e.definition, aliases_str, source_str)
+            )
+            if getattr(self, "_dict_selected_term", None) == e.term:
+                self._dict_tree.selection_set(item_id)
+
+    def _dict_clear(self) -> None:
+        if hasattr(self, "_dict_term_var"):
+            self._dict_term_var.set("")
+        if hasattr(self, "_dict_def_var"):
+            self._dict_def_var.set("")
+        if hasattr(self, "_dict_aliases_var"):
+            self._dict_aliases_var.set("")
+        self._dict_selected_term = None
+        if hasattr(self, "_dict_tree") and self._dict_tree:
+            for item in self._dict_tree.selection():
+                self._dict_tree.selection_remove(item)
+
+    def _dict_delete(self) -> None:
+        term = getattr(self, "_dict_selected_term", None) or (
+            self._dict_term_var.get().strip() if hasattr(self, "_dict_term_var") else ""
+        )
+        if not term:
+            return
+        ok, message = self.ctl.delete_term(term)
+        if ok:
+            self._dict_clear()
+            self.show("dictionary")
+            if hasattr(self, "_dict_msg"):
+                self._flash(self._dict_msg, message, theme.ACCENT)
+        else:
+            if hasattr(self, "_dict_msg"):
+                self._flash(self._dict_msg, message, theme.DANGER)
+
+    def dictionary_rows(self) -> List[str]:
+        if not hasattr(self, "_dict_tree") or self._dict_tree is None:
+            return []
+        rows: List[str] = []
+        for item_id in self._dict_tree.get_children():
+            vals = self._dict_tree.item(item_id, "values")
+            if vals:
+                rows.append(str(vals[0]))
+        return rows
+
+    def save_term_clicked(self) -> Tuple[bool, str]:
+        term = self._dict_term_var.get() if hasattr(self, "_dict_term_var") else ""
+        definition = self._dict_def_var.get() if hasattr(self, "_dict_def_var") else ""
+        aliases_raw = self._dict_aliases_var.get() if hasattr(self, "_dict_aliases_var") else ""
+        aliases = [a.strip() for a in re.split(r"[,，、]", aliases_raw) if a.strip()]
+        original = getattr(self, "_dict_selected_term", None)
+        ok, message = self.ctl.save_term(term, definition, aliases, original=original)
+        if ok:
+            self._dict_selected_term = term.strip()
+            self.show("dictionary")
+            if hasattr(self, "_dict_msg"):
+                self._flash(self._dict_msg, message, theme.ACCENT)
+        else:
+            if hasattr(self, "_dict_msg"):
+                self._flash(self._dict_msg, message, theme.DANGER)
+        return ok, message
+
+    def _dictionary_page(self) -> None:
+        view = self.ctl.dictionary()
+        self._dict_entries = view.entries
+
+        head = self._title("Dictionary")
+        total = len(view.entries)
+        custom = sum(1 for e in view.entries if not e.builtin)
+        tk.Label(head, text=f"共 {total} 個詞（自訂 {custom}）", bg=PAGE_BG, fg=MUTED,
+                 font=(FONT, 10)).pack(side="right")
+
+        hint = tk.Label(
+            self.body,
+            text="領域常用詞。語音辨識、辨識後的校正和每個模式的 System prompt 都會用到；"
+                 "存檔後下一次錄音和整理就生效。",
+            bg=PAGE_BG, fg=MUTED, font=(FONT, 9), justify="left", anchor="w"
+        )
+        hint.pack(fill="x", padx=24)
+        hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(200, e.width - 4)))
+
+        if view.error and not view.entries:
+            err_box = tk.Frame(self.body, bg=PAGE_BG)
+            err_box.pack(fill="both", expand=True, padx=24, pady=20)
+            tk.Label(err_box, text=view.error, bg=PAGE_BG, fg=theme.DANGER,
+                     font=(FONT, 11), justify="left", anchor="w").pack(anchor="w")
+            return
+
+        if view.error:
+            tk.Label(self.body, text=view.error, bg=PAGE_BG, fg=theme.DANGER,
+                     font=(FONT, 9), justify="left", anchor="w").pack(fill="x", padx=24, pady=(2, 0))
+
+        bar = tk.Frame(self.body, bg=PAGE_BG)
+        bar.pack(fill="x", padx=24, pady=(8, 4))
+        tk.Label(bar, text="篩選", bg=PAGE_BG, fg=MUTED, font=(FONT, 10)).pack(side="left", padx=(0, 6))
+        self._dict_filter_var = tk.StringVar(value=getattr(self, "_dict_filter_text", ""))
+        filter_entry = ttk.Entry(bar, textvariable=self._dict_filter_var, font=(FONT, 10), width=24)
+        filter_entry.pack(side="left")
+
+        def on_filter(*_args: Any) -> None:
+            self._dict_filter_text = self._dict_filter_var.get()
+            self._populate_dictionary_tree()
+
+        self._dict_filter_var.trace_add("write", on_filter)
+
+        style = ttk.Style(self.top)
+        style.configure("Dictionary.Treeview", font=(FONT, 10), foreground=theme.INK, rowheight=24)
+        style.configure("Dictionary.Treeview.Heading", font=(FONT, 10, "bold"), foreground=theme.ACCENT)
+        style.map("Dictionary.Treeview",
+                  background=[("selected", theme.ACCENT_SOFT_HOVER)],
+                  foreground=[("selected", theme.INK)])
+
+        tree_frame = tk.Frame(self.body, bg=PAGE_BG)
+        tree_frame.pack(fill="both", expand=True, padx=(24, 12), pady=(4, 8))
+        columns = ("term", "definition", "aliases", "source")
+        tree = ttk.Treeview(tree_frame, columns=columns, show="headings",
+                            style="Dictionary.Treeview", selectmode="browse")
+        tree.heading("term", text="詞")
+        tree.heading("definition", text="說明")
+        tree.heading("aliases", text="常被聽成")
+        tree.heading("source", text="來源")
+        # small base widths: the two wide columns take whatever room the window has
+        tree.column("term", width=130, minwidth=80, stretch=False, anchor="w")
+        tree.column("definition", width=200, minwidth=100, stretch=True, anchor="w")
+        tree.column("aliases", width=140, minwidth=80, stretch=True, anchor="w")
+        tree.column("source", width=52, minwidth=52, stretch=False, anchor="center")
+
+        scroll = ttk.Scrollbar(tree_frame, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        scroll.pack(side="right", fill="y")
+        tree.pack(side="left", fill="both", expand=True)
+        self._dict_tree = tree
+
+        edit_box = tk.Frame(self.body, bg=CARD_BG, padx=14, pady=10)
+        edit_box.pack(fill="x", padx=24, pady=(0, 14))
+
+        inputs = tk.Frame(edit_box, bg=CARD_BG)
+        inputs.pack(fill="x", pady=(0, 8))
+        inputs.columnconfigure(1, weight=1)
+        self._dict_term_var = tk.StringVar()
+        self._dict_def_var = tk.StringVar()
+        self._dict_aliases_var = tk.StringVar()
+        fields = (("詞", self._dict_term_var), ("說明", self._dict_def_var),
+                  ("常被聽成（用逗號分開）", self._dict_aliases_var))
+        for row, (caption, var) in enumerate(fields):
+            tk.Label(inputs, text=caption, bg=CARD_BG, fg=TEXT, font=(FONT, 10), anchor="w").grid(
+                row=row, column=0, sticky="w", padx=(0, 8), pady=2)
+            ttk.Entry(inputs, textvariable=var, font=(FONT, 10)).grid(
+                row=row, column=1, sticky="ew", pady=2)
+
+        btn_row = tk.Frame(edit_box, bg=CARD_BG)
+        btn_row.pack(fill="x")
+
+        theme.button(btn_row, "儲存", self.save_term_clicked, kind="primary").pack(side="left")
+        theme.button(btn_row, "刪除", self._dict_delete).pack(side="left", padx=6)
+        theme.button(btn_row, "清空", self._dict_clear).pack(side="left")
+
+        target_file = view.user_path if view.user_path.exists() else view.base_path
+        theme.button(btn_row, "開啟檔案", lambda: open_path(target_file)).pack(side="left", padx=6)
+
+        self._dict_msg = tk.Label(btn_row, text="", bg=CARD_BG, fg=MUTED, font=(FONT, 9))
+        self._dict_msg.pack(side="left", padx=8)
+
+        def on_tree_select(_event: Any = None) -> None:
+            if not self._dict_tree:
+                return
+            selected = self._dict_tree.selection()
+            if not selected:
+                return
+            item = self._dict_tree.item(selected[0])
+            vals = item["values"]
+            if vals and len(vals) >= 3:
+                self._dict_term_var.set(str(vals[0]))
+                self._dict_def_var.set(str(vals[1]))
+                self._dict_aliases_var.set(str(vals[2]))
+                self._dict_selected_term = str(vals[0])
+
+        tree.bind("<<TreeviewSelect>>", on_tree_select)
+        self._populate_dictionary_tree()
+
+    # ---------------------------------------------------------- settings
+    def save_settings_clicked(self) -> Tuple[bool, str]:
+        """What the 儲存 button of the System setting page does."""
+        v = self._settings_vars
+        labels = {label: key for key, label in LANGUAGE_CHOICES}
+        ok, message = self.ctl.save_settings(
+            labels.get(v["language"].get(), ""), v["min_chunk_sec"].get(), v["silence_sec"].get(),
+            v["max_chunk_sec"].get(), v["cache_dir"].get(), v["records_dir"].get(),
+            stt_profile=self._settings_profiles.get(v["stt_profile"].get()))
+        self._flash(self._settings_msg, message, theme.ACCENT if ok else theme.DANGER, seconds=6)
+        return ok, message
+
+    def _settings_page(self) -> None:
+        view = self.ctl.settings()
+        self._title("System setting")
+        hint = tk.Label(self.body, bg=PAGE_BG, fg=MUTED, font=(FONT, 9), justify="left", anchor="w",
+                        text="語言和秒數存檔後，下一次錄音就開始用。辨識模型和資料夾要重開程式才會換，"
+                             "資料夾裡原本的檔案不會搬過去。")
+        hint.pack(fill="x", padx=24)
+        hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(200, e.width - 4)))
+
+        card = self._card(self.body)
+        card.pack(fill="x", padx=24, pady=(10, 8))
+        card.columnconfigure(1, weight=1)
+        fmt = lambda x: f"{x:g}"
+        self._settings_vars = {
+            "stt_profile": tk.StringVar(value=dict(view.stt_profiles).get(view.stt_profile, "")),
+            "language": tk.StringVar(value=dict(LANGUAGE_CHOICES)[view.language]),
+            "min_chunk_sec": tk.StringVar(value=fmt(view.min_chunk_sec)),
+            "silence_sec": tk.StringVar(value=fmt(view.silence_sec)),
+            "max_chunk_sec": tk.StringVar(value=fmt(view.max_chunk_sec)),
+            "cache_dir": tk.StringVar(value=view.cache_dir),
+            "records_dir": tk.StringVar(value=view.records_dir),
+        }
+        v = self._settings_vars
+        row = [0]
+
+        def line(caption: str, note: str = "") -> tk.Frame:
+            """One setting: caption on the left, a frame for its widgets, a note under it."""
+            tk.Label(card, text=caption, bg=CARD_BG, fg=TEXT, font=(FONT, 10), anchor="w").grid(
+                row=row[0], column=0, sticky="nw", padx=(0, 14), pady=(6, 0))
+            cell = tk.Frame(card, bg=CARD_BG)
+            cell.grid(row=row[0], column=1, sticky="ew", pady=(6, 0))
+            if note:
+                tk.Label(card, text=note, bg=CARD_BG, fg=MUTED, font=(FONT, 9), anchor="w",
+                         justify="left", wraplength=470).grid(row=row[0] + 1, column=1, sticky="w")
+            row[0] += 2
+            return cell
+
+        self._settings_profiles = {label: name for name, label in view.stt_profiles}
+        cell = line("辨識模型", "模型越大，同音字和專有名詞越準，但越慢。換了之後要重開程式。")
+        theme.combobox(cell, textvariable=v["stt_profile"], width=34,
+                       values=[label for _name, label in view.stt_profiles]).pack(side="left")
+
+        cell = line("辨識語言", "自動會先花時間判斷語言；固定成中文或英文比較快，但另一種語言的整段話會變差。")
+        theme.combobox(cell, textvariable=v["language"], width=22,
+                       values=[label for _key, label in LANGUAGE_CHOICES]).pack(side="left")
+
+        def seconds(caption: str, key: str, note: str) -> None:
+            cell = line(caption, note)
+            ttk.Entry(cell, textvariable=v[key], font=(FONT, 10), width=8).pack(side="left")
+            tk.Label(cell, text="秒", bg=CARD_BG, fg=TEXT, font=(FONT, 10)).pack(side="left", padx=6)
+
+        seconds("每段至少", "min_chunk_sec", "講滿這麼久之後，遇到停頓就送去辨識。調小，字比較快出現，但太短容易聽錯。")
+        seconds("停頓", "silence_sec", "安靜這麼久才算一次停頓。")
+        seconds("每段最長", "max_chunk_sec", "一直沒有停頓時，到這裡強制切開。")
+
+        def folder(caption: str, key: str, note: str) -> None:
+            cell = line(caption, note)
+
+            def browse() -> None:
+                from tkinter import filedialog
+
+                chosen = filedialog.askdirectory(parent=self.top, initialdir=v[key].get() or ".")
+                if chosen:
+                    v[key].set(str(Path(chosen)))
+
+            theme.button(cell, "開啟", lambda: open_path(Path(v[key].get()))).pack(side="right")
+            theme.button(cell, "瀏覽…", browse).pack(side="right", padx=6)
+            ttk.Entry(cell, textvariable=v[key], font=(FONT, 10)).pack(side="left", fill="x", expand=True)
+
+        folder("暫存檔資料夾", "cache_dir", "錄音暫存、草稿自動保存、prompt 和詞庫的備份。")
+        folder("歷史紀錄資料夾", "records_dir", "按「完成」存下來的每一筆口述，也是 Home 和 History 讀的地方。")
+
+        bar = tk.Frame(self.body, bg=PAGE_BG)
+        bar.pack(fill="x", padx=24, pady=(4, 14))
+        theme.button(bar, "儲存", self.save_settings_clicked, kind="primary").pack(side="left")
+        if view.path is not None:
+            where = tk.Label(bar, text=f"存在 {view.path}", bg=PAGE_BG, fg=MUTED, font=(FONT, 9))
+            where.pack(side="right")
+        self._settings_msg = tk.Label(bar, text="", bg=PAGE_BG, fg=MUTED, font=(FONT, 9),
+                                      justify="left", anchor="w")
+        self._settings_msg.pack(side="left", padx=10)
+
     # ------------------------------------------------------------ prompt
     def _keep_prompt_edit(self) -> None:
         """Remember what is in the editor, so browsing away does not lose unloaded edits."""
@@ -376,6 +685,10 @@ class InfoWindow:
                         justify="left", anchor="w")
         note.pack(fill="x", padx=24)
         note.bind("<Configure>", lambda e: note.configure(wraplength=max(200, e.width - 4)))
+        link = tk.Label(self.body, text="{glossary} = Dictionary 的內容 →", bg=PAGE_BG,
+                        fg=theme.ACCENT, font=(FONT, 9), cursor="hand2", anchor="w")
+        link.pack(fill="x", padx=24)
+        link.bind("<Button-1>", lambda _e: self.show("dictionary"))
 
         view = self.ctl.prompt(mode)
         bar = tk.Frame(self.body, bg=PAGE_BG)

@@ -5,6 +5,7 @@ Validates configurations internally with Pydantic, returning the dataclass AppCo
 """
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
 
@@ -362,6 +363,64 @@ def _convert_to_dataclass(validated: _PydanticAppConfig, project_root: Path) -> 
     )
 
 
+logger = logging.getLogger(__name__)
+
+SETTINGS_FILE = "settings.local.yaml"     # written by the panel's "System setting" page
+
+
+def resolve_config_path(path: Optional[Union[Path, str]] = None) -> Path:
+    """The config file `load_config(path)` reads (absolute)."""
+    if path is None:
+        candidate = Path("config/config.yaml")
+        fallback = Path("config/config.example.yaml")
+        if candidate.exists():
+            return candidate.resolve()
+        if fallback.exists():
+            return fallback.resolve()
+        raise FileNotFoundError(
+            "Neither config/config.yaml nor config/config.example.yaml found."
+        )
+    resolved = Path(path)
+    if not resolved.exists():
+        raise FileNotFoundError(f"Configuration file not found: {resolved}")
+    return resolved.resolve()
+
+
+def settings_path(config_path: Union[Path, str]) -> Path:
+    """The settings file that sits next to a config file and overrides it."""
+    return Path(config_path).parent / SETTINGS_FILE
+
+
+def _deep_merge(base: Dict[str, Any], over: Dict[str, Any]) -> Dict[str, Any]:
+    out = dict(base)
+    for key, value in over.items():
+        if isinstance(value, dict) and isinstance(out.get(key), dict):
+            out[key] = _deep_merge(out[key], value)
+        else:
+            out[key] = value
+    return out
+
+
+def _with_settings(raw_data: Dict[str, Any], config_path: Path) -> Dict[str, Any]:
+    """Lay the settings file over the config. A broken settings file is ignored."""
+    path = settings_path(config_path)
+    if not path.exists():
+        return raw_data
+    try:
+        over = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        if not isinstance(over, dict):
+            raise ValueError("not a mapping")
+        # a setting for a profile the config no longer has must not create that profile
+        profiles = over.get("stt_profiles")
+        if isinstance(profiles, dict):
+            known = raw_data.get("stt_profiles") or {}
+            over = dict(over, stt_profiles={k: v for k, v in profiles.items() if k in known})
+        return _deep_merge(raw_data, over)
+    except Exception as exc:
+        logger.warning("Settings file %s ignored: %s", path, exc)
+        return raw_data
+
+
 def load_config(
     path: Optional[Union[Path, str]] = None,
     overrides: Optional[Dict[str, Any]] = None,
@@ -373,23 +432,7 @@ def load_config(
       ("device"/"model"/"model_path" patch the *active* STT profile)
     - "${ENV}" style values are NOT expanded; secrets come only via api_key_env.
     """
-    if path is None:
-        candidate = Path("config/config.yaml")
-        fallback = Path("config/config.example.yaml")
-        if candidate.exists():
-            resolved_path = candidate
-        elif fallback.exists():
-            resolved_path = fallback
-        else:
-            raise FileNotFoundError(
-                "Neither config/config.yaml nor config/config.example.yaml found."
-            )
-    else:
-        resolved_path = Path(path)
-        if not resolved_path.exists():
-            raise FileNotFoundError(f"Configuration file not found: {resolved_path}")
-
-    resolved_path = resolved_path.resolve()
+    resolved_path = resolve_config_path(path)
     # Determine project root (parent of config/ directory when config is inside config/)
     if resolved_path.parent.name == "config":
         project_root = resolved_path.parent.parent
@@ -401,6 +444,7 @@ def load_config(
 
     if not isinstance(raw_data, dict):
         raw_data = {}
+    raw_data = _with_settings(raw_data, resolved_path)
 
     # Validate with Pydantic internally
     validated_model = _PydanticAppConfig.model_validate(raw_data)

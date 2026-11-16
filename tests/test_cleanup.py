@@ -186,3 +186,27 @@ def test_llm_outage_falls_back_to_rule_cleaned_text(tmp_path):
     p = _pipeline(tmp_path, _LLM(exc=LLMConnectionError("down")), fillers=["嗯", "那個"])
     res = p.refine_only("嗯，那個，請看這個這個結果", Mode.CLEAN)
     assert res.fallback_triggered and res.final_text == "請看這個結果"
+
+
+def test_prompt_mode_guard_leaves_room_for_restructuring():
+    raw = "嗯幫我比較一下 OPC 跟 ILT 的差異 然後 mask 的資料量大概 2千 筆 結果列出來"
+    # a lead-in line, list wording and a word or two of its own are fine in prompt mode
+    out = ("請完成以下工作，並把結果整理給我：\n1. 比較 OPC 與 ILT 的差異，逐項說明。\n"
+           "2. mask 的資料量大約 2000 筆。\n3. 把結果列出來，使用 AI 產生的 summary。")
+    assert guard_check(raw, out, "prompt") is None
+    assert guard_check(raw, out, "clean") is not None            # clean stays strict
+    # an answer is still refused: far longer, or full of terms nobody said
+    assert guard_check(raw, out + "OPC 是光學鄰近修正，" * 12, "prompt") is not None
+    assert guard_check(raw, "用 Python、pandas、numpy 寫 script 比較 OPC 跟 ILT", "prompt") is not None
+    assert guard_check(raw, "比較 OPC 跟 ILT，資料量 5000 筆", "prompt") is not None
+
+
+@pytest.mark.guard
+def test_refine_only_can_keep_a_doubted_result_for_review(tmp_path):
+    raw = "比較這兩個方法 然後寫成表格"
+    p = _pipeline(tmp_path, _LLM("比較 OPC 與 ILT，並寫成表格。"))
+    strict = p.refine_only(raw, Mode.PROMPT)
+    assert strict.fallback_triggered and not strict.guard_warnings
+    kept = p.refine_only(raw, Mode.PROMPT, guard_warns=True)
+    assert not kept.fallback_triggered and kept.final_text.startswith("比較 OPC")
+    assert kept.guard_warnings and "英文詞" in kept.guard_warnings[0]

@@ -4,11 +4,14 @@ Integrates DraftModel with Tk Text widget, FileDrop, and clipboard actions.
 """
 from __future__ import annotations
 
+import json
 import logging
+import re
 import time
 import tkinter as tk
 from dataclasses import dataclass
-from typing import Any, Callable, List, Optional, Sequence, Tuple
+from pathlib import Path
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 from tkinter import ttk
 
 from local_typeless.capture.clipboard_images import Win32ClipboardBackend
@@ -22,6 +25,9 @@ logger = logging.getLogger(__name__)
 
 FONT_FAMILY = "Microsoft JhengHei UI"
 TICK_MS = 150
+LINE_GUTTER_PX = 34
+TABS_FILE = "draft_tabs.json"
+RESULT_TITLE_EMPTY = "整理結果（按「重新整理」後出現）"
 
 
 @dataclass
@@ -149,6 +155,11 @@ class DraftWindow:
         self._record_hint = ""
         self._local_msg = ""
         self._local_msg_until = 0.0
+        self._line_rows: List[Tuple[int, int]] = []
+        # Draft tabs. The one on screen lives in the model; the others wait here as data.
+        self._tabs: List[Dict[str, Any]] = [{"name": "草稿1"}]
+        self._active = 0
+        self._result_warn = False
 
         self._build_ui()
 
@@ -162,7 +173,9 @@ class DraftWindow:
 
         if getattr(self.model, "_autosave", False):
             self.model.load()
+            self._load_tabs()
             self._update_raw_box()
+        self._render_tabs()
 
         # Setup file drag and drop
         self._file_drop = enable_file_drop(self.top)
@@ -195,6 +208,8 @@ class DraftWindow:
 
     def close(self) -> None:
         """Destroy window and cleanup file drop hooks."""
+        if self._alive:
+            self._save_tabs()
         self._alive = False
         if self._file_drop:
             self._file_drop.remove()
@@ -412,22 +427,37 @@ class DraftWindow:
         draft_frame = tk.Frame(panes, bg=theme.PAGE_BG, padx=10, pady=4)
         draft_head = tk.Frame(draft_frame, bg=theme.PAGE_BG)
         draft_head.pack(fill="x", pady=(0, 4))
-        label(draft_head, "草稿", fg=theme.ACCENT, size=12).pack(side="left")
-        label(draft_head, "可直接修改；講的話和貼上的參照都進到這裡", size=9).pack(
-            side="left", padx=8)
+        # the buttons are packed first so a long row of tabs cannot push them out
         self.copy_all_btn = theme.button(draft_head, "複製草稿", self._on_copy_all)
         self.copy_all_btn.pack(side="right")
+        self._cleared: Optional[Tuple[str, List[Tuple[int, int]]]] = None   # for 復原清空
+        self.clear_btn = theme.button(draft_head, "清空", self._on_clear)
+        self.clear_btn.pack(side="right", padx=4)
+        self.tab_bar = tk.Frame(draft_head, bg=theme.PAGE_BG)
+        self.tab_bar.pack(side="left")
+        self._tab_widgets: List[tk.Label] = []
+        label(draft_head, "可直接修改；右鍵分頁可儲存或刪除", size=9).pack(side="left", padx=8)
+        self.line_gutter = tk.Canvas(draft_frame, width=LINE_GUTTER_PX, bg=theme.SIDEBAR_BG,
+                                     highlightthickness=0, borderwidth=0)
+        self.line_gutter.pack(side="left", fill="y")
         self.text = theme.text_box(draft_frame, undo=True, wrap="word", height=10)
         text_scroll = ttk.Scrollbar(draft_frame, orient="vertical", command=self.text.yview)
-        self.text.configure(yscrollcommand=text_scroll.set)
+
+        def scrolled(first: str, last: str) -> None:
+            text_scroll.set(first, last)
+            self._draw_line_numbers()
+
+        self.text.configure(yscrollcommand=scrolled)
         text_scroll.pack(side="right", fill="y")
         self.text.pack(side="left", fill="both", expand=True)
+        self.text.bind("<Configure>", lambda _e: self.text.after_idle(self._draw_line_numbers),
+                       add="+")
         panes.add(draft_frame, weight=3)
 
         result_frame = tk.Frame(panes, bg=theme.PAGE_BG, padx=10, pady=4)
         result_head = tk.Frame(result_frame, bg=theme.PAGE_BG)
         result_head.pack(fill="x", pady=(0, 4))
-        self.result_title = label(result_head, "整理結果（按「重新整理」後出現）",
+        self.result_title = label(result_head, RESULT_TITLE_EMPTY,
                                   fg=theme.ACCENT, size=12)
         self.result_title.pack(side="left")
         self.paste_back_btn = theme.button(result_head, "貼回上一個視窗", self._on_paste_back,
@@ -445,6 +475,7 @@ class DraftWindow:
 
         # Tag for embedded items
         self.text.tag_configure("embed", background="#e0f2fe", foreground="#0369a1")
+        self.text.tag_raise("sel")       # or a selected reference keeps its own background
 
         # Key bindings
         self.text.bind("<Control-v>", lambda _e: (self.paste_from_clipboard(), "break")[1])
@@ -493,7 +524,36 @@ class DraftWindow:
     def _select_all(self) -> None:
         self.text.tag_add("sel", "1.0", "end")
 
+    def visible_line_numbers(self) -> List[Tuple[int, int]]:
+        """(line number, y of its first row) for every draft line whose start is on screen.
+
+        A line is what ends with Enter; a long line that wraps keeps one number.
+        """
+        first = int(self.text.index("@0,0").split(".")[0])
+        last = int(self.text.index(f"@0,{self.text.winfo_height()}").split(".")[0])
+        rows: List[Tuple[int, int]] = []
+        for number in range(first, last + 1):
+            info = self.text.dlineinfo(f"{number}.0")
+            if info is not None:
+                rows.append((number, info[1] + info[3] // 2))
+        return rows
+
+    def _draw_line_numbers(self) -> None:
+        try:
+            rows = self.visible_line_numbers()
+        except tk.TclError:
+            return
+        if rows == self._line_rows:
+            return
+        self._line_rows = rows
+        gutter = self.line_gutter
+        gutter.delete("all")
+        for number, y in rows:
+            gutter.create_text(LINE_GUTTER_PX - 6, y, anchor="e", text=str(number),
+                               fill=theme.MUTED, font=(FONT_FAMILY, 9))
+
     def _on_text_modified(self, _event: Any = None) -> None:
+        self.text.after_idle(self._draw_line_numbers)
         if self.text.edit_modified():
             self.text.edit_modified(False)
             if getattr(self.model, "_autosave", False):
@@ -506,6 +566,172 @@ class DraftWindow:
     def _set_result(self, text: str) -> None:
         self.result.delete("1.0", "end")
         self.result.insert("1.0", text)
+
+    def _set_result_title(self, text: str = "", warn: bool = False) -> None:
+        """Heading of the result box; `warn` = it carries doubts about the result."""
+        self._result_warn = warn
+        self.result_title.config(text=text or RESULT_TITLE_EMPTY,
+                                 fg=theme.DANGER if warn else theme.ACCENT)
+
+    # ------------------------------------------------------------- draft tabs
+    def tab_names(self) -> List[str]:
+        return [t["name"] for t in self._tabs]
+
+    def _can_change_tab(self) -> bool:
+        if self._recording or self._busy:
+            self.flash("錄音或整理進行中，等結束後再切換草稿", 5.0)
+            return False
+        return True
+
+    def _snapshot(self) -> Dict[str, Any]:
+        return {"name": self._tabs[self._active]["name"], "state": self.model.state(),
+                "result": self.result_text(), "title": self.result_title.cget("text"),
+                "warn": self._result_warn}
+
+    def _show_tab(self, tab: Dict[str, Any]) -> None:
+        self.model.set_state(tab.get("state") or {})
+        self._set_result(tab.get("result") or "")
+        self._set_result_title(tab.get("title") or "", bool(tab.get("warn")))
+        self._cleared = None
+        try:
+            self.text.edit_reset()          # Ctrl+Z must not bring back another tab's text
+        except tk.TclError:
+            pass
+        self._update_raw_box()
+        self._update_ui_state()
+
+    def _after_tab_change(self) -> None:
+        self._render_tabs()
+        if getattr(self.model, "_autosave", False):
+            self.model.save()
+        self._save_tabs()
+
+    def switch_tab(self, index: int) -> bool:
+        if index == self._active:
+            return True
+        if not 0 <= index < len(self._tabs) or not self._can_change_tab():
+            return False
+        self._tabs[self._active] = self._snapshot()
+        self._active = index
+        self._show_tab(self._tabs[index])
+        self._after_tab_change()
+        return True
+
+    def new_tab(self) -> bool:
+        if not self._can_change_tab():
+            return False
+        self._tabs[self._active] = self._snapshot()
+        used = [int(m.group(1)) for m in (re.fullmatch(r"草稿(\d+)", n) for n in self.tab_names()) if m]
+        self._tabs.append({"name": f"草稿{max(used, default=0) + 1}"})
+        self._active = len(self._tabs) - 1
+        self._show_tab(self._tabs[self._active])
+        self._after_tab_change()
+        self.text.focus_set()
+        return True
+
+    def delete_tab(self, index: int, confirm: bool = True) -> bool:
+        if not 0 <= index < len(self._tabs) or not self._can_change_tab():
+            return False
+        self._tabs[self._active] = self._snapshot()
+        tab = self._tabs[index]
+        if confirm and ((tab.get("state") or {}).get("text") or "").strip():
+            from tkinter import messagebox
+
+            if not messagebox.askyesno("刪除草稿", f"「{tab['name']}」裡還有內容，確定刪除？",
+                                       parent=self.top):
+                return False
+        if len(self._tabs) == 1:
+            self._tabs = [{"name": "草稿1"}]          # there is always one draft
+        else:
+            del self._tabs[index]
+            if index < self._active or self._active >= len(self._tabs):
+                self._active -= 1
+        self._show_tab(self._tabs[self._active])
+        self._after_tab_change()
+        self.flash(f"已刪除{tab['name']}")
+        return True
+
+    def save_tab(self, index: int) -> bool:
+        """Keep a draft as a record (History) without closing or emptying it."""
+        if not self.switch_tab(index):
+            return False
+        draft = self.model.buffer.get_text()
+        if not draft.strip():
+            self.flash("這份草稿是空的，沒有東西可存")
+            return False
+        result = self.result_text()
+        if result.strip():
+            final_text, source = result, draft
+        else:
+            final_text, source = draft, self.model.raw_transcript()
+        self.actions.save_draft(final_text, source)
+        self.flash(f"已把{self._tabs[index]['name']}存成紀錄（草稿還在）", 6.0)
+        return True
+
+    def _tab_menu(self, event: Any, index: int) -> None:
+        menu = tk.Menu(self.top, tearoff=False)
+        menu.add_command(label="儲存成紀錄", command=lambda: self.save_tab(index))
+        menu.add_command(label="刪除", command=lambda: self.delete_tab(index))
+        try:
+            menu.tk_popup(event.x_root, event.y_root)
+        finally:
+            menu.grab_release()
+
+    def _render_tabs(self) -> None:
+        for w in self.tab_bar.winfo_children():
+            w.destroy()
+        self._tab_widgets = []
+        for i, tab in enumerate(self._tabs):
+            active = i == self._active
+            w = tk.Label(self.tab_bar, text=tab["name"], padx=10, pady=3, cursor="hand2",
+                         font=(FONT_FAMILY, 10, "bold" if active else "normal"),
+                         bg=theme.ACCENT if active else theme.SIDEBAR_BG,
+                         fg="#ffffff" if active else theme.TEXT)
+            w.pack(side="left", padx=(0, 3))
+            w.bind("<Button-1>", lambda _e, i=i: self.switch_tab(i))
+            w.bind("<Button-3>", lambda e, i=i: self._tab_menu(e, i))
+            self._tab_widgets.append(w)
+        plus = tk.Label(self.tab_bar, text="＋", padx=8, pady=3, cursor="hand2",
+                        font=(FONT_FAMILY, 10), bg=theme.SIDEBAR_BG, fg=theme.ACCENT)
+        plus.pack(side="left")
+        plus.bind("<Button-1>", lambda _e: self.new_tab())
+        self.new_tab_btn = plus
+
+    def _tabs_file(self) -> Path:
+        return Path(self.model._cache_dir) / TABS_FILE
+
+    def _save_tabs(self) -> None:
+        """Names, order and the drafts that are not on screen (that one is the model's file)."""
+        if not getattr(self.model, "_autosave", False):
+            return
+        try:
+            tabs = list(self._tabs)
+            tabs[self._active] = dict(self._snapshot(), state={})
+            path = self._tabs_file()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix(".tmp")
+            tmp.write_text(json.dumps({"active": self._active, "tabs": tabs}, ensure_ascii=False,
+                                      indent=2), encoding="utf-8")
+            tmp.replace(path)
+        except Exception as exc:
+            logger.warning("Failed to save draft tabs: %s", exc)
+
+    def _load_tabs(self) -> None:
+        path = self._tabs_file()
+        if not path.exists():
+            return
+        try:
+            data = json.loads(path.read_text(encoding="utf-8"))
+            tabs = [t for t in data.get("tabs", []) if isinstance(t, dict) and t.get("name")]
+            if not tabs:
+                return
+            self._tabs = tabs
+            self._active = min(max(int(data.get("active", 0)), 0), len(tabs) - 1)
+            tab = tabs[self._active]             # its draft was loaded by the model already
+            self._set_result(tab.get("result") or "")
+            self._set_result_title(tab.get("title") or "", bool(tab.get("warn")))
+        except Exception as exc:
+            logger.warning("Failed to load draft tabs: %s", exc)
 
     def _on_refine_full(self) -> None:
         if self._recording or self._busy:
@@ -522,7 +748,7 @@ class DraftWindow:
         protected, mapping = self.model.protect()
         self.set_busy(True, f"{mode_label}中…（草稿不會被改動）")
 
-        def on_done(refined_or_none: Optional[str], err_msg: str) -> None:
+        def on_done(refined_or_none: Optional[str], err_msg: str, doubts: str = "") -> None:
             self.set_busy(False)
             if refined_or_none is None or err_msg:
                 self.flash(f"整理失敗，草稿與原結果都沒有變動：{err_msg or '未知錯誤'}", 8.0)
@@ -532,9 +758,14 @@ class DraftWindow:
                 self.flash("LLM 弄丟了嵌入的參照，這次結果沒有採用；請再按一次", 8.0)
                 return
             self._set_result(restored)
-            self.result_title.config(text=f"整理結果（{mode_label}）")
-            self.flash("已更新整理結果")
+            if doubts:
+                self._set_result_title(f"整理結果（{mode_label}）⚠ 請檢查：{doubts[:36]}", warn=True)
+                self.flash(f"已更新整理結果，但有疑點請檢查：{doubts}", 10.0)
+            else:
+                self._set_result_title(f"整理結果（{mode_label}）")
+                self.flash("已更新整理結果")
             self._update_ui_state()
+            self._save_tabs()
 
         self.actions.refine(protected, mode, on_done)
 
@@ -548,6 +779,23 @@ class DraftWindow:
         if text:
             copy_with_retry(text)
             self.flash("已複製草稿")
+
+    def _on_clear(self) -> None:
+        """Empty the draft. While it stays empty the same button puts it back."""
+        buf = self.model.buffer
+        text = buf.get_text()
+        if text:
+            self._cleared = (text, buf.get_tag_ranges("embed"))
+            buf.clear()
+            self.flash("已清空草稿；按「復原清空」可以拿回來", 6.0)
+        elif self._cleared is not None:
+            old, embeds = self._cleared
+            self._cleared = None
+            buf.set_text(old)
+            for start, end in embeds:
+                buf.add_tag("embed", start, end)
+            self.flash("已復原草稿")
+        self._update_ui_state()
 
     def _on_copy_result(self) -> None:
         text = self.result_text()
@@ -584,10 +832,11 @@ class DraftWindow:
         except Exception as exc:
             logger.debug("Failed to copy finished draft: %s", exc)
         self._set_result("")
-        self.result_title.config(text="整理結果（按「重新整理」後出現）")
+        self._set_result_title()
         self._update_raw_box()
         self.flash("已存成紀錄並複製到剪貼簿", 6.0)
         self._update_ui_state()
+        self._save_tabs()
 
     # ------------------------------------------------------------- polling tick
     def _tick(self) -> None:
@@ -602,6 +851,7 @@ class DraftWindow:
                         self.flash("已插入檔案路徑")
             self._refresh_message()
             self._update_ui_state()
+            self._draw_line_numbers()        # catches re-wrapping that fires no event
         except Exception as exc:
             logger.debug("DraftWindow._tick error: %s", exc)
         finally:
@@ -612,6 +862,9 @@ class DraftWindow:
         try:
             n_chars = len(self.model.buffer.get_text())
             count = f"草稿 {n_chars} 字"
+            clear = "復原清空" if not n_chars and self._cleared is not None else "清空"
+            if self.clear_btn.cget("text") != clear:
+                self.clear_btn.config(text=clear)
             if self.count_lbl.cget("text") != count:
                 self.count_lbl.config(text=count)
 

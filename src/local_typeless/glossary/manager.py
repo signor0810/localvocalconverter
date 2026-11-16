@@ -9,13 +9,15 @@ from __future__ import annotations
 import logging
 import re
 from pathlib import Path
-from typing import Dict, List, Union
+from typing import Dict, List, Optional, Union
 
 import yaml
 
 from local_typeless.types import GlossaryProvider
 
 logger = logging.getLogger(__name__)
+
+WHISPER_PROMPT_MAX_CHARS = 190      # Whisper keeps only about 224 tokens of prompt
 
 
 def user_overlay_path(glossary_path: Union[Path, str]) -> Path:
@@ -34,9 +36,11 @@ class GlossaryManager(GlossaryProvider):
         self,
         canonical_terms: List[Dict[str, str]],
         phonetic_aliases: Dict[str, str],
+        user_terms: Optional[List[str]] = None,
     ) -> None:
         self.canonical_terms = canonical_terms
         self.phonetic_aliases = phonetic_aliases
+        self.user_terms = list(user_terms or [])     # terms the user added (overlay file)
 
     @classmethod
     def from_yaml(cls, path: Union[Path, str]) -> GlossaryManager:
@@ -73,6 +77,7 @@ class GlossaryManager(GlossaryProvider):
             str(k): str(v) for k, v in raw_aliases.items()
         }
 
+        user_terms: List[str] = []
         # Check for user overlay file (<same dir>/<stem>.user.yaml)
         overlay_p = user_overlay_path(p)
         if overlay_p.exists():
@@ -99,6 +104,7 @@ class GlossaryManager(GlossaryProvider):
                                 continue
                             if term_val and term_val not in seen_terms:
                                 seen_terms.add(term_val)
+                                user_terms.append(term_val)
                                 canonical_terms.append(
                                     {"term": term_val, "definition": defn_val}
                                 )
@@ -117,15 +123,27 @@ class GlossaryManager(GlossaryProvider):
         return cls(
             canonical_terms=canonical_terms,
             phonetic_aliases=phonetic_aliases,
+            user_terms=user_terms,
         )
 
     def build_whisper_initial_prompt(self) -> str:
         """Generate a natural Chinese context prompt under 200 tokens for Whisper.
 
         Uses natural sentence phrasing rather than comma-separated lists to prevent
-        punctuation artifacts and hallucination in Whisper.
+        punctuation artifacts and hallucination in Whisper. Terms the user added in the
+        dictionary follow in a second sentence, as many as fit, so Whisper spells them right.
         """
-        return "今天討論 ILT 與 SMO 的 cost function，以及 High NA EUV 下的 OPC。"
+        prompt = "今天討論 ILT 與 SMO 的 cost function，以及 High NA EUV 下的 OPC。"
+        extra: List[str] = []
+        for term in self.user_terms:
+            if term in prompt or term in extra:
+                continue
+            if len(prompt) + len("也會提到。") + len("、".join(extra + [term])) > WHISPER_PROMPT_MAX_CHARS:
+                break
+            extra.append(term)
+        if extra:
+            prompt += "也會提到" + "、".join(extra) + "。"
+        return prompt
 
     def build_llm_glossary_section(self) -> str:
         """Format terms and phonetic aliases into a Markdown section for system prompts."""

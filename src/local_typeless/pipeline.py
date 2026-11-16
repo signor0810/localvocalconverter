@@ -292,8 +292,12 @@ class Pipeline:
         except Exception:
             return ""
 
-    def _guard(self, raw: str, out: str, mode: Mode) -> None:
-        """Raise LLMResponseError when `out` is not a faithful rewrite of `raw`."""
+    def _guard(self, raw: str, out: str, mode: Mode,
+               warnings: Optional[List[str]] = None) -> None:
+        """Raise LLMResponseError when `out` is not a faithful rewrite of `raw`.
+
+        With a `warnings` list the doubt is noted there and the output is kept: the
+        caller shows it to the user, who decides."""
         if not getattr(getattr(self.config, "refine", None), "guard", False):
             return
         from local_typeless.cleanup import guard as _guard_mod
@@ -302,7 +306,11 @@ class Pipeline:
             self._normalize_safe(raw), out, mode.value,
             allowed_terms=_guard_mod.glossary_terms(self._glossary_section_safe()),
         )
-        if reason:
+        if reason and warnings is not None:
+            logger.warning("guard doubt kept for review (%s): %s", mode.value, reason)
+            if reason not in warnings:
+                warnings.append(reason)
+        elif reason:
             raise LLMResponseError(f"{GUARD_REJECTED}：{reason}")
 
     def _finish(self, result: PipelineResult, record_history: bool) -> PipelineResult:
@@ -332,6 +340,7 @@ class Pipeline:
         mode: Mode,
         stt_elapsed: float = 0.0,
         images: Optional[Sequence[CapturedImage]] = None,
+        guard_warnings: Optional[List[str]] = None,
     ) -> PipelineResult:
         cfg = self.config
         img_list = list(images or [])
@@ -441,7 +450,7 @@ class Pipeline:
                         raise LLMResponseError("LLM reply is empty or degenerate")
                     if not markers_preserved(block, out):
                         raise LLMResponseError("image markers changed by LLM")
-                    self._guard(block, out, mode)
+                    self._guard(block, out, mode, guard_warnings)
                     parts.append(out)
                 except Exception as e:
                     logger.warning(
@@ -484,7 +493,7 @@ class Pipeline:
                 final_text = self.glossary.normalize_terms(appended)
                 if is_degenerate(final_text):
                     raise LLMResponseError("LLM reply is empty or degenerate")
-                self._guard(raw_text, final_text, mode)
+                self._guard(raw_text, final_text, mode, guard_warnings)
             except Exception as e:
                 logger.warning(
                     "LLM stage failed (%s: %s); emitting normalized raw transcript",
@@ -505,6 +514,7 @@ class Pipeline:
             error_message=error_message,
             total_blocks=total_blocks,
             fallback_blocks=fallback_blocks,
+            guard_warnings=list(guard_warnings or []),
             **base,
         )
 
@@ -559,9 +569,13 @@ class Pipeline:
             )
             return (self._fallback_text(raw), True)
 
-    def refine_only(self, text: str, mode: Mode) -> PipelineResult:
-        """Refine a whole text without emitting, history or record file."""
-        return self._refine_core(text, mode, stt_elapsed=0.0, images=None)
+    def refine_only(self, text: str, mode: Mode, guard_warns: bool = False) -> PipelineResult:
+        """Refine a whole text without emitting, history or record file.
+
+        `guard_warns`: keep an output the guard doubts and list the doubts in
+        `guard_warnings`, for a caller that shows the result for review."""
+        return self._refine_core(text, mode, stt_elapsed=0.0, images=None,
+                                 guard_warnings=[] if guard_warns else None)
 
     def save_draft(self, final_text: str, raw_text: str) -> Optional[Path]:
         """Append to history and write one record file for a finished draft. Never raises."""
