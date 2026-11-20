@@ -150,3 +150,36 @@ storage:
 draft:
   enabled: true     # draft window: cleaned text appears while you speak and can be edited
   autosave: true    # keep the unfinished draft across restarts
+
+editor:
+  prompts_root: "~/Documents/prompts"   # 使用者尚未指定；可設 OneDrive 底下以自動備份
+  file_layout: "{yyyy}/{mm}/{date}_{time}_{title}.md"   # title 初始為 "untitled"
+  auto_rename_after_refine: true
+  autosave_delay_ms: 1000
+
+  server:
+    port: 8765
+    autostart_cmd: ""                   # 例："pythonw -m local_typeless.cli serve"；空字串＝不自動啟動
+
+  paste:
+    image_dir: "assets/{yyyy}-{mm}"      # 相對於 prompts_root
+    image_name: "{prompt}_{n:02}.png"   # {prompt}＝prompt 檔名主幹
+    path_style: windows                 # windows | forward | wsl | markdown
+    quote_paths_with_spaces: true
+    image_preview_on_hover: true
+
+  refine:
+    default_mode: clean
+    modes_in_palette: [clean, prompt, slide, summary, transform]
+    result_view: split_right            # split_right | below | replace
+    protect_paths: true
+    protect_code_blocks: true
+
+  send:
+    copy: refined                       # refined | raw | both
+    auto_paste_to_last_window: false
+    mark_sent_in_frontmatter: true
+
+  frontmatter:
+    fields: [created, status, mode, refined_at, sent_at, target]
+

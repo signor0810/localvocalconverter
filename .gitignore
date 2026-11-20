@@ -12,6 +12,7 @@ records/
 *.stackdump
 *.log
 .pytest_cache/
+serve.json
 
 # secrets and machine-specific files: never commit
 .env
