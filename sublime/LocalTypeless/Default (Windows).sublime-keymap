@@ -1,0 +1,21 @@
+[
+    {
+        "keys": ["ctrl+alt+n"],
+        "command": "lt_new_prompt"
+    },
+    {
+        "keys": ["ctrl+alt+r"],
+        "command": "lt_refine",
+        "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    },
+    {
+        "keys": ["ctrl+v"],
+        "command": "lt_smart_paste",
+        "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    },
+    {
+        "keys": ["ctrl+shift+v"],
+        "command": "lt_paste_raw",
+        "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    }
+]
