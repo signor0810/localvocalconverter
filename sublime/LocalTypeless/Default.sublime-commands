@@ -1,0 +1,60 @@
+[
+    {
+        "caption": "Local Typeless: 新建 Prompt",
+        "command": "lt_new_prompt"
+    },
+    {
+        "caption": "Local Typeless: 瀏覽歷史 Prompt",
+        "command": "lt_history"
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (預設模式)",
+        "command": "lt_refine"
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (Clean - 去贅字校正)",
+        "command": "lt_refine",
+        "args": { "mode": "clean" }
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (Prompt - 改寫為 AI 提示詞)",
+        "command": "lt_refine",
+        "args": { "mode": "prompt" }
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (Summary - 重點摘要)",
+        "command": "lt_refine",
+        "args": { "mode": "summary" }
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (Slide - 單頁簡報架構)",
+        "command": "lt_refine",
+        "args": { "mode": "slide" }
+    },
+    {
+        "caption": "Local Typeless: AI 整理 (Transform - 客製轉換)",
+        "command": "lt_refine",
+        "args": { "mode": "transform" }
+    },
+    {
+        "caption": "Local Typeless: 送出 (複製整理結果)",
+        "command": "lt_send"
+    },
+    {
+        "caption": "Local Typeless: 貼回上一個視窗",
+        "command": "lt_paste_to_previous"
+    },
+    {
+        "caption": "Local Typeless: 系統設定介面 (GUI)",
+        "command": "lt_open_settings_gui",
+        "args": { "page": "settings" }
+    },
+    {
+        "caption": "Local Typeless: 開啟 config.yaml",
+        "command": "lt_open_settings"
+    },
+    {
+        "caption": "Local Typeless: 檢查後端狀態",
+        "command": "lt_check_status"
+    }
+]

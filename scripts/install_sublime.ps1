@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
     Installs the Local Typeless plugin into Sublime Text via junction link.
 
@@ -7,17 +7,22 @@
     - Auto-detects Sublime Text Packages directory (%APPDATA%\Sublime Text\Packages or %APPDATA%\Sublime Text 3\Packages).
     - Creates a directory junction: <PackagesDir>\LocalTypeless -> <repo>\sublime\LocalTypeless.
     - Ensures prompts_root directory exists (aligned with backend config / USERPROFILE).
+    - Optionally creates a startup shortcut for background serve.
 
 .PARAMETER PackagesDir
     Optional custom path to the Sublime Text Packages directory.
 
 .PARAMETER PromptsRoot
     Optional custom path to the prompts workspace root directory (defaults to configured prompts_root or ~/Documents/prompts).
+
+.PARAMETER StartupShortcut
+    If specified, creates a shortcut to LocalTypelessServe.vbs in the Windows Startup folder so the backend starts on login.
 #>
 [CmdletBinding()]
 param(
     [string]$PackagesDir = "",
-    [string]$PromptsRoot = ""
+    [string]$PromptsRoot = "",
+    [switch]$StartupShortcut
 )
 
 $ErrorActionPreference = "Stop"
@@ -113,15 +118,41 @@ if (-not (Test-Path $PromptsRoot)) {
     Write-Host "prompts_root already exists: $PromptsRoot" -ForegroundColor Gray
 }
 
-# 4. Installation summary
+# 4. Optional: Create Windows Startup Shortcut
+if ($StartupShortcut) {
+    $vbsPath = Join-Path $repoRoot "LocalTypelessServe.vbs"
+    if (Test-Path $vbsPath) {
+        $startupDir = [Environment]::GetFolderPath("Startup")
+        $shortcutPath = Join-Path $startupDir "LocalTypelessServe.lnk"
+        $wshShell = New-Object -ComObject WScript.Shell
+        $shortcut = $wshShell.CreateShortcut($shortcutPath)
+        $shortcut.TargetPath = "wscript.exe"
+        $shortcut.Arguments = "`"$vbsPath`""
+        $shortcut.WorkingDirectory = $repoRoot
+        $shortcut.Description = "Local Typeless Background Serve"
+        $shortcut.Save()
+        Write-Host "Created startup shortcut: $shortcutPath" -ForegroundColor Green
+    } else {
+        Write-Host "Warning: LocalTypelessServe.vbs not found, skipping startup shortcut." -ForegroundColor Yellow
+    }
+}
+
+# 5. Installation summary
 Write-Host "`nInstallation successful!" -ForegroundColor Green
 Write-Host "--------------------------------------------------------"
 Write-Host "  Plugin Junction : $targetJunction"
 Write-Host "  Source Directory: $sourceDir"
 Write-Host "  Prompts Root    : $PromptsRoot"
 Write-Host "--------------------------------------------------------"
-Write-Host "Next steps:"
-Write-Host "  1. Launch or switch to Sublime Text."
-Write-Host "  2. Start the local-typeless backend: local-typeless serve"
-Write-Host "  3. In Sublime Text, press Ctrl+Alt+N to create a new prompt."
-Write-Host "  4. Use Ctrl+V in managed files for smart image paste, and Ctrl+Alt+R to refine."
+Write-Host "Features available in Sublime Text:"
+Write-Host "  • Ctrl+Alt+N      : Create new prompt file"
+Write-Host "  • Ctrl+V          : Smart paste (images saved to assets, files formatted)"
+Write-Host "  • Ctrl+Alt+R      : AI Refine (Clean / Prompt / Summary / Slide / Transform)"
+Write-Host "  • Ctrl+Alt+Enter  : Send prompt (copy refined result to clipboard)"
+Write-Host "  • Ctrl+Alt+P      : Paste refined prompt directly to previous active window"
+Write-Host "  • Ctrl+Alt+H      : Quick panel prompt history"
+Write-Host "  • Ctrl+Alt+,      : Open Tk Settings / Dictionary GUI"
+Write-Host "  • Hover Preview   : Hover over image paths to see inline image popups"
+Write-Host "`nManual Control Scripts:"
+Write-Host "  • Background Serve: double-click LocalTypelessServe.vbs"
+Write-Host "  • Settings GUI    : double-click LocalTypelessSettings.vbs (or start_ui.bat)"

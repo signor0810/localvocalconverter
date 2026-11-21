@@ -1,0 +1,59 @@
+[
+    {
+        "caption": "Local Typeless",
+        "id": "local_typeless",
+        "children": [
+            {
+                "caption": "新 Prompt (Ctrl+Alt+N)",
+                "command": "lt_new_prompt"
+            },
+            {
+                "caption": "Prompt 歷史紀錄 (Ctrl+Alt+H)",
+                "command": "lt_history"
+            },
+            { "caption": "-" },
+            {
+                "caption": "✨ AI 整理 (Ctrl+Alt+R)",
+                "command": "lt_refine"
+            },
+            {
+                "caption": "📋 送出 (Ctrl+Alt+Enter)",
+                "command": "lt_send"
+            },
+            {
+                "caption": "📤 貼回上一個視窗 (Ctrl+Alt+P)",
+                "command": "lt_paste_to_previous"
+            },
+            { "caption": "-" },
+            {
+                "caption": "⚙️ 系統設定介面 (GUI)",
+                "command": "lt_open_settings_gui",
+                "args": { "page": "settings" }
+            },
+            {
+                "caption": "📖 詞庫管理 (Glossary)",
+                "command": "lt_open_settings_gui",
+                "args": { "page": "dictionary" }
+            },
+            {
+                "caption": "📝 System Prompt 管理",
+                "command": "lt_open_settings_gui",
+                "args": { "page": "prompt" }
+            },
+            {
+                "caption": "🔍 檢查口述紀錄 (Review)",
+                "command": "lt_open_settings_gui",
+                "args": { "page": "review" }
+            },
+            {
+                "caption": "開啟 config.yaml",
+                "command": "lt_open_settings"
+            },
+            { "caption": "-" },
+            {
+                "caption": "檢查後端狀態與啟動",
+                "command": "lt_check_status"
+            }
+        ]
+    }
+]

@@ -1,0 +1,66 @@
+[
+    { "caption": "-" },
+    {
+        "caption": "Local Typeless: ✨ AI 整理",
+        "command": "lt_refine",
+        "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+    },
+    {
+        "caption": "Local Typeless: 整理選取範圍",
+        "command": "lt_refine",
+        "context": [
+            { "key": "setting.lt_managed", "operator": "equal", "operand": true },
+            { "key": "selection_empty", "operator": "equal", "operand": false }
+        ]
+    },
+    {
+        "caption": "Local Typeless: 模式整理",
+        "children": [
+            {
+                "caption": "Clean（去除贅字校正）",
+                "command": "lt_refine",
+                "args": { "mode": "clean" },
+                "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+            },
+            {
+                "caption": "Prompt（改寫為 AI 提示詞）",
+                "command": "lt_refine",
+                "args": { "mode": "prompt" },
+                "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+            },
+            {
+                "caption": "Summary（重點摘要）",
+                "command": "lt_refine",
+                "args": { "mode": "summary" },
+                "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+            },
+            {
+                "caption": "Slide（單頁簡報架構）",
+                "command": "lt_refine",
+                "args": { "mode": "slide" },
+                "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+            },
+            {
+                "caption": "Transform（客製轉換）",
+                "command": "lt_refine",
+                "args": { "mode": "transform" },
+                "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+            }
+        ]
+    },
+    {
+        "caption": "Local Typeless: 📋 送出 (複製結果)",
+        "command": "lt_send",
+        "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+    },
+    {
+        "caption": "Local Typeless: 📤 貼回上一個視窗",
+        "command": "lt_paste_to_previous",
+        "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+    },
+    {
+        "caption": "Local Typeless: 原始格式貼上",
+        "command": "lt_paste_raw",
+        "context": [{ "key": "setting.lt_managed", "operator": "equal", "operand": true }]
+    }
+]

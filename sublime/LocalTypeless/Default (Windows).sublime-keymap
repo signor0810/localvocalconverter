@@ -17,5 +17,23 @@
         "keys": ["ctrl+shift+v"],
         "command": "lt_paste_raw",
         "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    },
+    {
+        "keys": ["ctrl+alt+enter"],
+        "command": "lt_send",
+        "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    },
+    {
+        "keys": ["ctrl+alt+p"],
+        "command": "lt_paste_to_previous",
+        "context": [{"key": "setting.lt_managed", "operator": "equal", "operand": true}]
+    },
+    {
+        "keys": ["ctrl+alt+h"],
+        "command": "lt_history"
+    },
+    {
+        "keys": ["ctrl+alt+,"],
+        "command": "lt_open_settings_gui"
     }
 ]

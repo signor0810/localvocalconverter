@@ -112,6 +112,26 @@
 
 調整 STT 執行硬體（CPU/GPU）、更換 STT 或 LLM 模型、圖片與串流長口述進階參數、公司內部 gateway 設定，請見 [docs/設定手冊.md](docs/設定手冊.md)。
 
+---
+
+## 8. Sublime Text Prompt Workspace（Prompt 工作區與伺服後端）
+
+本專案提供與 Sublime Text 4 深度整合的 Markdown Prompt 工作區（詳細安裝步驟請見 [docs/安裝指南.md](docs/安裝指南.md)，進階設定見 [docs/設定手冊.md](docs/設定手冊.md)）：
+- **一鍵安裝外掛**：執行 `powershell -ExecutionPolicy Bypass -File scripts\install_sublime.ps1` 建立 Sublime Text Packages 目錄連結並初始化 Prompt 工作區。
+- **背景伺服器**：提供輕量本機 HTTP API（只綁定 `127.0.0.1`，附 `X-LT-Token` 驗證與 mtime 熱重載，不載入肥大 STT 模型），提供 `/health`、`/config`、`/refine`、`/clipboard/capture`、`/paste_to_previous`、`/ui/open` 等端點。
+  - 外掛會自動在背景啟動後端，亦可雙擊專案根目錄的 `LocalTypelessServe.vbs` 手動靜默啟動。
+- **獨立系統設定 GUI**：
+  - 雙擊專案根目錄的 `LocalTypelessSettings.vbs` 或在 Sublime Text 按 `Ctrl+Alt+,` 即可開啟獨立設定視窗。
+  - 整合「Sublime 工作區與 LLM 設定」與「語音輸入與辨識設定」，支援切換 LLM Profile、設定檔存放目錄、路徑格式、保護規則與送出行為，並自動存入 `settings.local.yaml`。
+- **Sublime Text 外掛快捷鍵**：
+  - `Ctrl+Alt+N` 建立新 Prompt 檔案（依日期自動歸檔與 YAML frontmatter，頂端附快捷工具列）。
+  - `Ctrl+V`（於受管 Prompt 檔案內）智慧貼入：剪貼簿含圖片時自動存檔並插入路徑（依 `editor.paste.path_style` 格式，預設 `windows` 路徑；設為 `markdown` 時產生 Markdown 圖片語法），檔案則貼入絕對路徑；支援滑鼠懸停圖片預覽；`Ctrl+Shift+V` 為強制一般貼上。
+  - `Ctrl+Alt+R` AI 整理（分割視窗即時呈現，保護 Windows/Linux 路徑與程式碼區塊不被竄改，並依設定自動重新命名與更新 frontmatter）。
+  - `Ctrl+Alt+Enter` 送出（依 `editor.send.copy` 複製精煉／原文到剪貼簿並更新 frontmatter 狀態；若啟用自動貼回則一併貼回前一個視窗）。
+  - `Ctrl+Alt+P` 直接貼回前一個使用中視窗（終端機、瀏覽器等）。
+  - `Ctrl+Alt+H` 開啟歷史 Prompt 快速切換面板。
+  - `Ctrl+Alt+,` 開啟系統設定與工具 GUI（System setting / Dictionary / System prompt / Home / History / Review / Teach）。
+
 ## 授權
 
 本專案以 [MIT License](LICENSE) 釋出。相依套件各自的授權見 [docs/套件清單.md](docs/套件清單.md)。
