@@ -47,6 +47,9 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("check", help="show STT config, CUDA devices and LLM connectivity")
     srv = sub.add_parser("serve", help="run local HTTP server for editor integrations")
     srv.add_argument("--port", type=int, default=None, help="server port (default: from editor.server.port in config)")
+    pan = sub.add_parser("panel", help="open standalone settings / info panel")
+    pan.add_argument("--page", choices=["home", "history", "dictionary", "prompt", "settings", "review", "teach"], default="settings")
+    pan.add_argument("--auto-close", type=float, default=None, help="close the window after N seconds")
     return p
 
 
@@ -271,6 +274,9 @@ def main(argv: Optional[List[str]] = None) -> int:
     if args.command == "serve":
         from local_typeless.editor.server import run_serve
         return run_serve(args.config, port=args.port, overrides=_overrides(args))
+    if args.command == "panel":
+        from local_typeless.ui.panel import run_panel
+        return run_panel(args.config, page=args.page, overrides=_overrides(args), auto_close_sec=args.auto_close)
 
     from local_typeless.pipeline import Pipeline
 

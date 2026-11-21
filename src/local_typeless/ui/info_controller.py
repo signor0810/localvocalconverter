@@ -117,6 +117,31 @@ class SettingsView:
 
 
 @dataclass(frozen=True)
+class EditorSettingsView:
+    active_llm_profile: str
+    llm_profiles: Tuple[str, ...]
+    prompts_root: str
+    file_layout: str
+    auto_rename_after_refine: bool
+    autosave_delay_ms: int
+    path_style: str
+    quote_paths_with_spaces: bool
+    image_preview_on_hover: bool
+    default_mode: str
+    modes_in_palette: Tuple[str, ...]
+    result_view: str
+    protect_paths: bool
+    protect_code_blocks: bool
+    guard: bool
+    send_copy: str
+    auto_paste_to_last_window: bool
+    mark_sent_in_frontmatter: bool
+    server_port: int
+    autostart_cmd: str
+    path: Optional[Path]
+
+
+@dataclass(frozen=True)
 class DictEntry:
     term: str
     definition: str
@@ -152,13 +177,27 @@ class InfoController:
         now: Callable[[], datetime] = datetime.now,
         on_glossary_changed: Optional[Callable[[], None]] = None,
         settings_file: Optional[Path] = None,
+        config_path: Optional[Path] = None,
+        editor_prompts_root: Optional[Path] = None,
     ) -> None:
         self.cfg = cfg
         self._settings_file = settings_file
+        self.config_path = config_path
         self._chosen_stt_profile: Optional[str] = None      # saved, waiting for a restart
         self._glossary_section = glossary_section
         self._now = now
         self._on_glossary_changed = on_glossary_changed
+        if editor_prompts_root is not None:
+            self.editor_prompts_root: Optional[Path] = Path(editor_prompts_root).expanduser()
+        elif config_path is not None:
+            try:
+                from local_typeless.editor.config import load_editor_config
+                ed_cfg = load_editor_config(config_path)
+                self.editor_prompts_root = Path(ed_cfg.prompts_root).expanduser()
+            except Exception:
+                self.editor_prompts_root = None
+        else:
+            self.editor_prompts_root = None
 
     def _write_backup(
         self, folder_name: str, stem: str, ext: str, old_bytes: bytes
@@ -182,7 +221,62 @@ class InfoController:
         return Path(getattr(self.cfg.storage, "records_dir", "records"))
 
     def _records(self) -> List[Record]:
-        return load_records(self.records_dir)
+        records = list(load_records(self.records_dir))
+        if self.editor_prompts_root and self.editor_prompts_root.is_dir():
+            for p in self.editor_prompts_root.rglob("*.md"):
+                if "assets" in p.parts:
+                    continue
+                if p.name.endswith(".refined.md"):
+                    continue
+                try:
+                    text = p.read_text(encoding="utf-8")
+                except Exception:
+                    continue
+                mtime = p.stat().st_mtime
+                when: Optional[datetime] = None
+                mode = "clean"
+                raw_text = text
+                if text.startswith("---"):
+                    end_idx = text.find("\n---", 3)
+                    if end_idx != -1:
+                        fm_text = text[3:end_idx]
+                        raw_text = text[end_idx + 4:].strip()
+                        for line in fm_text.splitlines():
+                            k, _, v = line.partition(":")
+                            k, v = k.strip(), v.strip()
+                            if k == "mode" and v:
+                                mode = v
+                            elif k == "created" and v:
+                                try:
+                                    when = datetime.fromisoformat(v.replace(" ", "T"))
+                                except Exception:
+                                    try:
+                                        when = datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
+                                    except Exception:
+                                        pass
+                if when is None:
+                    when = datetime.fromtimestamp(mtime)
+
+                refined_path = p.with_name(p.stem + ".refined.md")
+                result_text = raw_text
+                if refined_path.is_file():
+                    try:
+                        result_text = refined_path.read_text(encoding="utf-8").strip()
+                    except Exception:
+                        pass
+
+                records.append(
+                    Record(
+                        path=p,
+                        mtime=mtime,
+                        raw_text=raw_text,
+                        result_text=result_text,
+                        mode=mode,
+                        when=when,
+                        fallback=False,
+                    )
+                )
+        return records
 
     def home(self) -> HomeStats:
         cfg = self.cfg
@@ -389,6 +483,208 @@ class InfoController:
         if folders_changed:
             message += "；資料夾要重開程式才會換，原本的檔案不會搬過去"
         return True, message
+
+    # ------------------------------------------------------- editor settings
+    def editor_settings(self) -> EditorSettingsView:
+        from local_typeless.editor.config import EditorConfig, load_editor_config
+
+        ed_cfg: EditorConfig
+        try:
+            ed_cfg = load_editor_config(self.config_path)
+        except Exception:
+            ed_cfg = EditorConfig()
+
+        active_llm = str(getattr(self.cfg, "active_llm_profile", ""))
+        llm_profs = getattr(self.cfg, "llm_profiles", {})
+        llm_profiles = tuple(llm_profs.keys()) if isinstance(llm_profs, dict) else ()
+        prompts_root = str(ed_cfg.prompts_root)
+
+        return EditorSettingsView(
+            active_llm_profile=active_llm,
+            llm_profiles=llm_profiles,
+            prompts_root=prompts_root,
+            file_layout=ed_cfg.file_layout,
+            auto_rename_after_refine=ed_cfg.auto_rename_after_refine,
+            autosave_delay_ms=ed_cfg.autosave_delay_ms,
+            path_style=ed_cfg.paste.path_style,
+            quote_paths_with_spaces=ed_cfg.paste.quote_paths_with_spaces,
+            image_preview_on_hover=ed_cfg.paste.image_preview_on_hover,
+            default_mode=ed_cfg.refine.default_mode,
+            modes_in_palette=tuple(ed_cfg.refine.modes_in_palette),
+            result_view=ed_cfg.refine.result_view,
+            protect_paths=ed_cfg.refine.protect_paths,
+            protect_code_blocks=ed_cfg.refine.protect_code_blocks,
+            guard=bool(getattr(getattr(self.cfg, "refine", None), "guard", True)),
+            send_copy=ed_cfg.send.copy,
+            auto_paste_to_last_window=ed_cfg.send.auto_paste_to_last_window,
+            mark_sent_in_frontmatter=ed_cfg.send.mark_sent_in_frontmatter,
+            server_port=ed_cfg.server.port,
+            autostart_cmd=ed_cfg.server.autostart_cmd,
+            path=self._settings_file,
+        )
+
+    def save_editor_settings(
+        self,
+        active_llm_profile: Optional[str] = None,
+        prompts_root: Optional[str] = None,
+        path_style: Optional[str] = None,
+        quote_paths_with_spaces: Optional[bool] = None,
+        image_preview_on_hover: Optional[bool] = None,
+        default_mode: Optional[str] = None,
+        result_view: Optional[str] = None,
+        protect_paths: Optional[bool] = None,
+        protect_code_blocks: Optional[bool] = None,
+        guard: Optional[bool] = None,
+        auto_rename_after_refine: Optional[bool] = None,
+        send_copy: Optional[str] = None,
+        auto_paste_to_last_window: Optional[bool] = None,
+        autosave_delay_ms: Optional[Any] = None,
+        server_port: Optional[Any] = None,
+        autostart_cmd: Optional[str] = None,
+        file_layout: Optional[str] = None,
+        modes_in_palette: Optional[Sequence[str]] = None,
+        mark_sent_in_frontmatter: Optional[bool] = None,
+    ) -> Tuple[bool, str]:
+        path = self._settings_file
+        if path is None:
+            return False, "找不到設定檔的位置，無法儲存"
+
+        llm_profs = getattr(self.cfg, "llm_profiles", {})
+        if active_llm_profile is not None and isinstance(llm_profs, dict) and active_llm_profile not in llm_profs:
+            return False, "LLM Profile 不存在"
+        if path_style is not None and path_style not in ("windows", "forward", "wsl", "markdown"):
+            return False, "路徑格式不對"
+        if result_view is not None and result_view not in ("split_right", "below", "replace"):
+            return False, "整理結果顯示方式不對"
+        if send_copy is not None and send_copy not in ("refined", "raw", "both"):
+            return False, "送出複製內容選項不對"
+        if default_mode is not None and default_mode not in [m.value for m in Mode]:
+            return False, "預設整理模式不對"
+
+        delay_val: Optional[int] = None
+        if autosave_delay_ms is not None:
+            try:
+                delay_val = int(autosave_delay_ms)
+            except (TypeError, ValueError):
+                return False, "自動存檔延遲要填整數"
+            if delay_val < 100:
+                return False, "自動存檔延遲至少需 100 毫秒"
+
+        port_val: Optional[int] = None
+        if server_port is not None:
+            try:
+                port_val = int(server_port)
+            except (TypeError, ValueError):
+                return False, "通訊埠要填整數"
+            if not 1 <= port_val <= 65535:
+                return False, "通訊埠必須在 1 到 65535 之間"
+
+        if prompts_root is not None:
+            prompts_root = prompts_root.strip()
+            if not prompts_root:
+                return False, "Prompt 存放資料夾不能是空的"
+            try:
+                Path(prompts_root).expanduser().mkdir(parents=True, exist_ok=True)
+            except OSError as e:
+                return False, f"資料夾建不起來：{e}"
+
+        data: Dict[str, Any] = {}
+        if path.exists():
+            try:
+                loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+                if isinstance(loaded, dict):
+                    data = loaded
+            except Exception:
+                pass
+
+        if active_llm_profile is not None:
+            data["active_llm_profile"] = active_llm_profile
+            self.cfg.active_llm_profile = active_llm_profile
+        if guard is not None:
+            refine_sec = data.get("refine") if isinstance(data.get("refine"), dict) else {}
+            refine_sec["guard"] = bool(guard)
+            data["refine"] = refine_sec
+            if hasattr(self.cfg, "refine"):
+                self.cfg.refine.guard = bool(guard)
+
+        ed_data = data.get("editor") if isinstance(data.get("editor"), dict) else {}
+        srv_data = ed_data.get("server") if isinstance(ed_data.get("server"), dict) else {}
+        pst_data = ed_data.get("paste") if isinstance(ed_data.get("paste"), dict) else {}
+        ref_data = ed_data.get("refine") if isinstance(ed_data.get("refine"), dict) else {}
+        snd_data = ed_data.get("send") if isinstance(ed_data.get("send"), dict) else {}
+
+        if prompts_root is not None:
+            ed_data["prompts_root"] = prompts_root
+            self.editor_prompts_root = Path(prompts_root).expanduser()
+        if file_layout is not None:
+            ed_data["file_layout"] = file_layout
+        if auto_rename_after_refine is not None:
+            ed_data["auto_rename_after_refine"] = bool(auto_rename_after_refine)
+        if delay_val is not None:
+            ed_data["autosave_delay_ms"] = delay_val
+
+        if port_val is not None:
+            srv_data["port"] = port_val
+        if autostart_cmd is not None:
+            srv_data["autostart_cmd"] = autostart_cmd
+        if srv_data:
+            ed_data["server"] = srv_data
+
+        if path_style is not None:
+            pst_data["path_style"] = path_style
+        if quote_paths_with_spaces is not None:
+            pst_data["quote_paths_with_spaces"] = bool(quote_paths_with_spaces)
+        if image_preview_on_hover is not None:
+            pst_data["image_preview_on_hover"] = bool(image_preview_on_hover)
+        if pst_data:
+            ed_data["paste"] = pst_data
+
+        if default_mode is not None:
+            ref_data["default_mode"] = default_mode
+        if modes_in_palette is not None:
+            ref_data["modes_in_palette"] = list(modes_in_palette)
+        if result_view is not None:
+            ref_data["result_view"] = result_view
+        if protect_paths is not None:
+            ref_data["protect_paths"] = bool(protect_paths)
+        if protect_code_blocks is not None:
+            ref_data["protect_code_blocks"] = bool(protect_code_blocks)
+        if ref_data:
+            ed_data["refine"] = ref_data
+
+        if send_copy is not None:
+            snd_data["copy"] = send_copy
+        if auto_paste_to_last_window is not None:
+            snd_data["auto_paste_to_last_window"] = bool(auto_paste_to_last_window)
+        if mark_sent_in_frontmatter is not None:
+            snd_data["mark_sent_in_frontmatter"] = bool(mark_sent_in_frontmatter)
+        if snd_data:
+            ed_data["send"] = snd_data
+
+        data["editor"] = ed_data
+
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            dumped = yaml.safe_dump(data, allow_unicode=True, sort_keys=False)
+            path.write_bytes(dumped.encode("utf-8"))
+        except OSError as e:
+            return False, f"設定檔寫不進去：{e}"
+
+        return True, "工作區設定已儲存，下一次操作或重載時生效"
+
+    def test_llm_connection(self) -> Tuple[bool, str]:
+        from local_typeless.llm import create_llm_client
+        try:
+            client = create_llm_client(self.cfg.llm)
+            models = client.list_models()
+            if models:
+                shown = ", ".join(models[:4])
+                if len(models) > 4:
+                    shown += f" 等 {len(models)} 個模型"
+                return True, f"連線成功！可用模型：{shown}"
+            return True, f"連線成功（模型：{self.cfg.llm.model}）"
+        except Exception as e:
+            return False, f"連線失敗：{type(e).__name__}: {e}"
 
     # ------------------------------------------------------------ dictionary
     def dictionary(self) -> DictionaryView:

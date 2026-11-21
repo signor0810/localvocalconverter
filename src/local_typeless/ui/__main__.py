@@ -234,9 +234,11 @@ def main(argv: Optional[List[str]] = None) -> int:
 
         from local_typeless.config.loader import resolve_config_path, settings_path
 
+        res_cfg = resolve_config_path(args.config)
         return InfoController(cfg, lambda: pipeline.glossary.build_llm_glossary_section(),
                               on_glossary_changed=reload_glossary,
-                              settings_file=settings_path(resolve_config_path(args.config)))
+                              settings_file=settings_path(res_cfg),
+                              config_path=res_cfg)
 
     app = PanelApp(
         controller,

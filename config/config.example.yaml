@@ -159,7 +159,7 @@ editor:
 
   server:
     port: 8765
-    autostart_cmd: ""                   # 例："pythonw -m local_typeless.cli serve"；空字串＝不自動啟動
+    autostart_cmd: ""                   # 空字串＝自動偵測本機 .venv 啟動；填 "off"＝停用自動啟動；或指定自訂指令
 
   paste:
     image_dir: "assets/{yyyy}-{mm}"      # 相對於 prompts_root

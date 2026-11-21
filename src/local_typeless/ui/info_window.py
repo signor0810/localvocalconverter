@@ -74,9 +74,15 @@ class InfoWindow:
         master: tk.Misc,
         ctl: InfoController,
         mode_getter: Optional[Callable[[], Optional[Mode]]] = None,
+        open_review: Optional[Callable[[], None]] = None,
+        open_teach: Optional[Callable[[], None]] = None,
+        show_editor_settings: bool = True,
     ) -> None:
         self.ctl = ctl
         self._mode_getter = mode_getter
+        self._open_review = open_review
+        self._open_teach = open_teach
+        self._show_editor_settings = show_editor_settings
         self.top = tk.Toplevel(master)
         self.top.title("Local Typeless")
         self.top.geometry("900x680")
@@ -96,6 +102,8 @@ class InfoWindow:
         self._dict_selected_term: Optional[str] = None
         self._dict_tree: Optional[ttk.Treeview] = None
         self._dict_entries: List[DictEntry] = []
+        self._settings_vars: Dict[str, tk.StringVar] = {}
+        self._editor_settings_vars: Dict[str, Any] = {}
         self._build()
         self.top.protocol("WM_DELETE_WINDOW", self.close)
         self.show("home")
@@ -126,6 +134,21 @@ class InfoWindow:
             item.pack(fill="x", padx=8, pady=1)
             item.bind("<Button-1>", lambda _e, k=key: self.show(k))
             self._nav[key] = item
+
+        if self._open_review is not None or self._open_teach is not None:
+            side_bottom = tk.Frame(side, bg=SIDEBAR_BG)
+            side_bottom.pack(side="bottom", fill="x", pady=10)
+            if self._open_review is not None:
+                rev_btn = tk.Label(side_bottom, text="檢查口述紀錄…", bg=SIDEBAR_BG, fg=TEXT, anchor="w",
+                                   font=(FONT, 10), padx=14, pady=6, cursor="hand2")
+                rev_btn.pack(fill="x", padx=8, pady=2)
+                rev_btn.bind("<Button-1>", lambda _e: self._open_review())
+            if self._open_teach is not None:
+                tch_btn = tk.Label(side_bottom, text="教學模式…", bg=SIDEBAR_BG, fg=TEXT, anchor="w",
+                                   font=(FONT, 10), padx=14, pady=6, cursor="hand2")
+                tch_btn.pack(fill="x", padx=8, pady=2)
+                tch_btn.bind("<Button-1>", lambda _e: self._open_teach())
+
         self.body = tk.Frame(self.top, bg=PAGE_BG)
         self.body.pack(side="left", fill="both", expand=True)
 
@@ -543,17 +566,201 @@ class InfoWindow:
         self._flash(self._settings_msg, message, theme.ACCENT if ok else theme.DANGER, seconds=6)
         return ok, message
 
+    def save_editor_settings_clicked(self) -> Tuple[bool, str]:
+        """What the 儲存工作區設定 button does."""
+        v = self._editor_settings_vars
+        ok, message = self.ctl.save_editor_settings(
+            active_llm_profile=v["active_llm_profile"].get(),
+            prompts_root=v["prompts_root"].get(),
+            path_style=v["path_style"].get(),
+            quote_paths_with_spaces=v["quote_paths_with_spaces"].get(),
+            image_preview_on_hover=v["image_preview_on_hover"].get(),
+            default_mode=v["default_mode"].get(),
+            result_view=v["result_view"].get(),
+            protect_paths=v["protect_paths"].get(),
+            protect_code_blocks=v["protect_code_blocks"].get(),
+            guard=v["guard"].get(),
+            auto_rename_after_refine=v["auto_rename_after_refine"].get(),
+            send_copy=v["send_copy"].get(),
+            auto_paste_to_last_window=v["auto_paste_to_last_window"].get(),
+            autosave_delay_ms=v["autosave_delay_ms"].get(),
+        )
+        self._flash(self._editor_settings_msg, message, theme.ACCENT if ok else theme.DANGER, seconds=6)
+        return ok, message
+
+    def test_llm_clicked(self) -> Tuple[bool, str]:
+        """Test current LLM connection."""
+        profile = self._editor_settings_vars["active_llm_profile"].get()
+        if profile in getattr(self.ctl.cfg, "llm_profiles", {}):
+            self.ctl.cfg.active_llm_profile = profile
+        ok, message = self.ctl.test_llm_connection()
+        self._flash(self._editor_settings_msg, message, theme.ACCENT if ok else theme.DANGER, seconds=6)
+        return ok, message
+
     def _settings_page(self) -> None:
-        view = self.ctl.settings()
         self._title("System setting")
-        hint = tk.Label(self.body, bg=PAGE_BG, fg=MUTED, font=(FONT, 9), justify="left", anchor="w",
+
+        container = tk.Frame(self.body, bg=PAGE_BG)
+        container.pack(fill="both", expand=True)
+
+        canvas = tk.Canvas(container, bg=PAGE_BG, highlightthickness=0)
+        vscroll = ttk.Scrollbar(container, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=vscroll.set)
+
+        vscroll.pack(side="right", fill="y")
+        canvas.pack(side="left", fill="both", expand=True)
+
+        content = tk.Frame(canvas, bg=PAGE_BG)
+        win_id = canvas.create_window((0, 0), window=content, anchor="nw")
+
+        def _on_configure(_e: Any = None) -> None:
+            canvas.configure(scrollregion=canvas.bbox("all"))
+
+        def _on_canvas_configure(e: Any) -> None:
+            canvas.itemconfig(win_id, width=e.width)
+
+        content.bind("<Configure>", _on_configure)
+        canvas.bind("<Configure>", _on_canvas_configure)
+
+        def _on_mousewheel(e: Any) -> None:
+            if canvas.winfo_exists():
+                canvas.yview_scroll(int(-1 * (e.delta / 120)), "units")
+
+        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+
+        # ----------------- Top Card: Sublime 工作區與 LLM 設定 -----------------
+        if self._show_editor_settings:
+            ed_view = self.ctl.editor_settings()
+
+            head_frame = tk.Frame(content, bg=PAGE_BG)
+            head_frame.pack(fill="x", padx=24, pady=(6, 2))
+            tk.Label(head_frame, text="Sublime 工作區與 LLM 設定", bg=PAGE_BG, fg=TEXT,
+                     font=(FONT, 11, "bold")).pack(side="left")
+
+            ed_card = self._card(content)
+            ed_card.pack(fill="x", padx=24, pady=(4, 12))
+            ed_card.columnconfigure(1, weight=1)
+
+            self._editor_settings_vars = {
+                "active_llm_profile": tk.StringVar(value=ed_view.active_llm_profile),
+                "prompts_root": tk.StringVar(value=ed_view.prompts_root),
+                "path_style": tk.StringVar(value=ed_view.path_style),
+                "quote_paths_with_spaces": tk.BooleanVar(value=ed_view.quote_paths_with_spaces),
+                "image_preview_on_hover": tk.BooleanVar(value=ed_view.image_preview_on_hover),
+                "default_mode": tk.StringVar(value=ed_view.default_mode),
+                "result_view": tk.StringVar(value=ed_view.result_view),
+                "protect_paths": tk.BooleanVar(value=ed_view.protect_paths),
+                "protect_code_blocks": tk.BooleanVar(value=ed_view.protect_code_blocks),
+                "guard": tk.BooleanVar(value=ed_view.guard),
+                "auto_rename_after_refine": tk.BooleanVar(value=ed_view.auto_rename_after_refine),
+                "send_copy": tk.StringVar(value=ed_view.send_copy),
+                "auto_paste_to_last_window": tk.BooleanVar(value=ed_view.auto_paste_to_last_window),
+                "autosave_delay_ms": tk.StringVar(value=str(ed_view.autosave_delay_ms)),
+            }
+            ev = self._editor_settings_vars
+            ed_row = [0]
+
+            def ed_line(caption: str, note: str = "") -> tk.Frame:
+                tk.Label(ed_card, text=caption, bg=CARD_BG, fg=TEXT, font=(FONT, 10), anchor="w").grid(
+                    row=ed_row[0], column=0, sticky="nw", padx=(0, 14), pady=(6, 0))
+                cell = tk.Frame(ed_card, bg=CARD_BG)
+                cell.grid(row=ed_row[0], column=1, sticky="ew", pady=(6, 0))
+                if note:
+                    tk.Label(ed_card, text=note, bg=CARD_BG, fg=MUTED, font=(FONT, 9), anchor="w",
+                             justify="left", wraplength=470).grid(row=ed_row[0] + 1, column=1, sticky="w")
+                ed_row[0] += 2
+                return cell
+
+            # 1. LLM Profile
+            cell = ed_line("LLM Profile", "選擇使用的語言模型設定檔。")
+            theme.combobox(cell, textvariable=ev["active_llm_profile"], width=24,
+                           values=list(ed_view.llm_profiles)).pack(side="left")
+            theme.button(cell, "測試連線", self.test_llm_clicked).pack(side="left", padx=8)
+
+            # 2. Prompts Root
+            cell = ed_line("Prompt 資料夾", "Sublime 工作區存放 prompt Markdown 筆記的根目錄。")
+            def browse_prompts() -> None:
+                from tkinter import filedialog
+                chosen = filedialog.askdirectory(parent=self.top, initialdir=ev["prompts_root"].get() or ".")
+                if chosen:
+                    ev["prompts_root"].set(str(Path(chosen)))
+
+            theme.button(cell, "開啟", lambda: open_path(Path(ev["prompts_root"].get()))).pack(side="right")
+            theme.button(cell, "瀏覽…", browse_prompts).pack(side="right", padx=6)
+            ttk.Entry(cell, textvariable=ev["prompts_root"], font=(FONT, 10)).pack(side="left", fill="x", expand=True)
+
+            # 3. Path style & quote spaces
+            cell = ed_line("貼上路徑格式", "貼入檔案路徑時採用的格式風格。")
+            theme.combobox(cell, textvariable=ev["path_style"], width=16,
+                           values=["windows", "forward", "wsl", "markdown"]).pack(side="left")
+            tk.Checkbutton(cell, text="含空白路徑加引號", variable=ev["quote_paths_with_spaces"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left", padx=(12, 0))
+            tk.Checkbutton(cell, text="懸停圖片預覽", variable=ev["image_preview_on_hover"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left", padx=(12, 0))
+
+            # 4. Refine mode & result view
+            cell = ed_line("整理設定", "預設整理模式與結果分割視窗方式。")
+            tk.Label(cell, text="預設模式:", bg=CARD_BG, fg=MUTED, font=(FONT, 9)).pack(side="left")
+            theme.combobox(cell, textvariable=ev["default_mode"], width=12,
+                           values=["clean", "prompt", "slide", "summary", "transform"]).pack(side="left", padx=(4, 12))
+            tk.Label(cell, text="顯示方式:", bg=CARD_BG, fg=MUTED, font=(FONT, 9)).pack(side="left")
+            theme.combobox(cell, textvariable=ev["result_view"], width=14,
+                           values=["split_right", "below", "replace"]).pack(side="left", padx=(4, 0))
+
+            # 5. Protection & Guard
+            cell = ed_line("保護與檢查", "防止 LLM 整理時誤改特殊內容或產生幻覺。")
+            tk.Checkbutton(cell, text="保護路徑", variable=ev["protect_paths"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left")
+            tk.Checkbutton(cell, text="保護程式碼區塊", variable=ev["protect_code_blocks"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left", padx=(10, 0))
+            tk.Checkbutton(cell, text="防呆檢查", variable=ev["guard"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left", padx=(10, 0))
+            tk.Checkbutton(cell, text="首次整理自動改名", variable=ev["auto_rename_after_refine"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left", padx=(10, 0))
+
+            # 6. Send & Paste
+            cell = ed_line("送出與貼回", "送出時複製的內容與是否自動貼回上一個使用中視窗。")
+            tk.Label(cell, text="複製內容:", bg=CARD_BG, fg=MUTED, font=(FONT, 9)).pack(side="left")
+            theme.combobox(cell, textvariable=ev["send_copy"], width=12,
+                           values=["refined", "raw", "both"]).pack(side="left", padx=(4, 12))
+            tk.Checkbutton(cell, text="自動貼回上一個視窗", variable=ev["auto_paste_to_last_window"],
+                           bg=CARD_BG, fg=TEXT, activebackground=CARD_BG, selectcolor=CARD_BG,
+                           font=(FONT, 9)).pack(side="left")
+
+            # 7. Autosave delay
+            cell = ed_line("自動存檔延遲", "編輯停止後多少毫秒自動存檔（至少 100 毫秒）。")
+            ttk.Entry(cell, textvariable=ev["autosave_delay_ms"], font=(FONT, 10), width=8).pack(side="left")
+            tk.Label(cell, text="毫秒", bg=CARD_BG, fg=TEXT, font=(FONT, 10)).pack(side="left", padx=6)
+
+            # Editor settings save button bar
+            ed_bar = tk.Frame(content, bg=PAGE_BG)
+            ed_bar.pack(fill="x", padx=24, pady=(2, 14))
+            theme.button(ed_bar, "儲存工作區設定", self.save_editor_settings_clicked, kind="primary").pack(side="left")
+            self._editor_settings_msg = tk.Label(ed_bar, text="", bg=PAGE_BG, fg=MUTED, font=(FONT, 9),
+                                                 justify="left", anchor="w")
+            self._editor_settings_msg.pack(side="left", padx=10)
+
+        # ----------------- Bottom Card: STT 語音設定 -----------------
+        view = self.ctl.settings()
+        stt_head = tk.Frame(content, bg=PAGE_BG)
+        stt_head.pack(fill="x", padx=24, pady=(6, 2))
+        tk.Label(stt_head, text="語音輸入與辨識設定", bg=PAGE_BG, fg=TEXT,
+                 font=(FONT, 11, "bold")).pack(side="left")
+
+        hint = tk.Label(content, bg=PAGE_BG, fg=MUTED, font=(FONT, 9), justify="left", anchor="w",
                         text="語言和秒數存檔後，下一次錄音就開始用。辨識模型和資料夾要重開程式才會換，"
                              "資料夾裡原本的檔案不會搬過去。")
         hint.pack(fill="x", padx=24)
         hint.bind("<Configure>", lambda e: hint.configure(wraplength=max(200, e.width - 4)))
 
-        card = self._card(self.body)
-        card.pack(fill="x", padx=24, pady=(10, 8))
+        card = self._card(content)
+        card.pack(fill="x", padx=24, pady=(6, 8))
         card.columnconfigure(1, weight=1)
         fmt = lambda x: f"{x:g}"
         self._settings_vars = {
@@ -615,8 +822,8 @@ class InfoWindow:
         folder("暫存檔資料夾", "cache_dir", "錄音暫存、草稿自動保存、prompt 和詞庫的備份。")
         folder("歷史紀錄資料夾", "records_dir", "按「完成」存下來的每一筆口述，也是 Home 和 History 讀的地方。")
 
-        bar = tk.Frame(self.body, bg=PAGE_BG)
-        bar.pack(fill="x", padx=24, pady=(4, 14))
+        bar = tk.Frame(content, bg=PAGE_BG)
+        bar.pack(fill="x", padx=24, pady=(4, 20))
         theme.button(bar, "儲存", self.save_settings_clicked, kind="primary").pack(side="left")
         if view.path is not None:
             where = tk.Label(bar, text=f"存在 {view.path}", bg=PAGE_BG, fg=MUTED, font=(FONT, 9))
